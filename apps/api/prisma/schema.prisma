@@ -1,0 +1,333 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id             String          @id @default(uuid()) @map("tenant_id") @db.Uuid
+  name           String
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  accounts       Account[]
+  auditLogs      AuditLog[]
+  changeRequests ChangeRequest[]
+  customers      Customer[]
+  dailyCloses    DailyClose[]
+  monthlyCloses  MonthlyClose[]
+  priceItems     PriceItem[]
+  storeSettings  StoreSettings?
+
+  @@map("tenants")
+}
+
+model StoreSettings {
+  tenantId             String  @id @map("tenant_id") @db.Uuid
+  storeCode            String  @unique @map("store_code")
+  serviceTaxMultiplier Decimal @default(1.32) @map("service_tax_multiplier") @db.Decimal
+  taxRate              Decimal @default(0.10) @map("tax_rate") @db.Decimal
+  serviceRate          Decimal @default(0.20) @map("service_rate") @db.Decimal
+  roundingUnit         Int     @default(1000) @map("rounding_unit")
+  roundingThreshold    Int     @default(500) @map("rounding_threshold")
+  inhouseDefault       Int     @default(1000) @map("inhouse_default")
+  drinkDefault         Int     @default(100) @map("drink_default")
+  shiftCycleDays       Int     @default(14) @map("shift_cycle_days")
+  dailyCloseTime       String  @default("05:00") @map("daily_close_time") @db.VarChar(5)
+  timezone             String  @default("Asia/Tokyo")
+  tenant               Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@map("store_settings")
+}
+
+model Account {
+  id                     String             @id @default(uuid()) @map("account_id") @db.Uuid
+  tenantId               String             @map("tenant_id") @db.Uuid
+  loginId                String             @unique @map("login_id")
+  passwordHash           String             @map("password_hash")
+  role                   String
+  status                 String             @default("active")
+  passwordChangedAt      DateTime?          @map("password_changed_at") @db.Timestamptz(6)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant                 Tenant             @relation(fields: [tenantId], references: [id])
+  auditLogs              AuditLog[]         @relation("Actor")
+  castCheckouts          CastCheckout[]     @relation("CastCheckoutAccount")
+  castCheckoutsBy        CastCheckout[]     @relation("CastCheckoutSetBy")
+  changeRequestsApproved ChangeRequest[]    @relation("ApprovedBy")
+  changeRequestsBy       ChangeRequest[]    @relation("RequestedBy")
+  compensationPlans      CompensationPlan[]
+  dailyClosesBy          DailyClose[]       @relation("ClosedBy")
+  drinkCounts            DrinkCount[]
+  monthlyClosesBy        MonthlyClose[]     @relation("MonthlyClosedBy")
+  notifications          Notification[]
+  punchEvents            PunchEvent[]
+  salesSlipsClosedBy     SalesSlip[]        @relation("SlipClosedBy")
+  salesSlips             SalesSlip[]        @relation("MainCast")
+  shiftEntries           ShiftEntry[]
+  userProfile            UserProfile?
+
+  @@index([tenantId], map: "idx_accounts_tenant")
+  @@map("accounts")
+}
+
+model UserProfile {
+  accountId        String  @id @map("account_id") @db.Uuid
+  tenantId         String  @map("tenant_id") @db.Uuid
+  displayName      String  @map("display_name")
+  userType         String  @map("user_type")
+  employmentStatus String  @default("active") @map("employment_status")
+  account          Account @relation(fields: [accountId], references: [id])
+
+  @@index([tenantId], map: "idx_user_profiles_tenant")
+  @@map("user_profiles")
+}
+
+model CompensationPlan {
+  id             String    @id @default(uuid()) @map("plan_id") @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  accountId      String    @map("account_id") @db.Uuid
+  effectiveFrom  DateTime  @map("effective_from") @db.Date
+  effectiveTo    DateTime? @map("effective_to") @db.Date
+  payType        String    @map("pay_type")
+  hourlyRate     Int?      @map("hourly_rate")
+  commissionRate Decimal?  @map("commission_rate") @db.Decimal
+  inhouseUnit    Int       @default(1000) @map("inhouse_unit")
+  drinkUnit      Int       @default(100) @map("drink_unit")
+  account        Account   @relation(fields: [accountId], references: [id])
+
+  @@index([tenantId], map: "idx_comp_plans_tenant")
+  @@index([accountId], map: "idx_comp_plans_account")
+  @@map("compensation_plans")
+}
+
+model ShiftEntry {
+  id           String   @id @default(uuid()) @map("shift_id") @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  accountId    String   @map("account_id") @db.Uuid
+  periodStart  DateTime @map("period_start") @db.Date
+  periodEnd    DateTime @map("period_end") @db.Date
+  date         DateTime @db.Date
+  plannedStart String?  @map("planned_start") @db.VarChar(5)
+  plannedEnd   String?  @map("planned_end") @db.VarChar(5)
+  memo         String?
+  status       String   @default("submitted")
+  account      Account  @relation(fields: [accountId], references: [id])
+
+  @@index([tenantId], map: "idx_shift_entries_tenant")
+  @@index([accountId], map: "idx_shift_entries_account")
+  @@map("shift_entries")
+}
+
+model PunchEvent {
+  id           String   @id @default(uuid()) @map("punch_id") @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  accountId    String   @map("account_id") @db.Uuid
+  businessDate DateTime @map("business_date") @db.Date
+  type         String
+  timestamp    DateTime @db.Timestamptz(6)
+  account      Account  @relation(fields: [accountId], references: [id])
+
+  @@index([tenantId], map: "idx_punch_events_tenant")
+  @@index([accountId], map: "idx_punch_events_account")
+  @@index([businessDate], map: "idx_punch_events_date")
+  @@map("punch_events")
+}
+
+model CastCheckout {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  businessDate   DateTime @map("business_date") @db.Date
+  checkoutTime   String   @map("checkout_time") @db.VarChar(5)
+  setByAccountId String   @map("set_by_account_id") @db.Uuid
+  account        Account  @relation("CastCheckoutAccount", fields: [accountId], references: [id])
+  setBy          Account  @relation("CastCheckoutSetBy", fields: [setByAccountId], references: [id])
+
+  @@index([tenantId], map: "idx_cast_checkouts_tenant")
+  @@index([accountId], map: "idx_cast_checkouts_account")
+  @@map("cast_checkouts")
+}
+
+model SalesSlip {
+  id               String       @id @default(uuid()) @map("slip_id") @db.Uuid
+  tenantId         String       @map("tenant_id") @db.Uuid
+  businessDate     DateTime     @map("business_date") @db.Date
+  tableNo          String?      @map("table_no")
+  customerId       String?      @map("customer_id") @db.Uuid
+  customerNameRaw  String?      @map("customer_name_raw")
+  partySize        Int          @map("party_size")
+  mainCastId       String       @map("main_cast_id") @db.Uuid
+  subtotal         Int
+  serviceTaxAmount Int          @map("service_tax_amount")
+  totalRounded     Int          @map("total_rounded")
+  status           String       @default("draft")
+  closedBy         String?      @map("closed_by") @db.Uuid
+  drinkCounts      DrinkCount[]
+  lines            SalesLine[]
+  closer           Account?     @relation("SlipClosedBy", fields: [closedBy], references: [id])
+  customer         Customer?    @relation(fields: [customerId], references: [id])
+  mainCast         Account      @relation("MainCast", fields: [mainCastId], references: [id])
+
+  @@index([tenantId], map: "idx_sales_slips_tenant")
+  @@index([businessDate], map: "idx_sales_slips_date")
+  @@map("sales_slips")
+}
+
+model SalesLine {
+  id        String    @id @default(uuid()) @map("line_id") @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  slipId    String    @map("slip_id") @db.Uuid
+  itemCode  String    @map("item_code")
+  itemName  String    @map("item_name")
+  qty       Decimal   @db.Decimal
+  unitPrice Int       @map("unit_price")
+  amount    Int
+  salesSlip SalesSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "idx_sales_lines_tenant")
+  @@index([slipId], map: "idx_sales_lines_slip")
+  @@map("sales_lines")
+}
+
+model DrinkCount {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  slipId    String    @map("slip_id") @db.Uuid
+  castId    String    @map("cast_id") @db.Uuid
+  cups      Int
+  cast      Account   @relation(fields: [castId], references: [id])
+  salesSlip SalesSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "idx_drink_counts_tenant")
+  @@index([slipId], map: "idx_drink_counts_slip")
+  @@index([castId], map: "idx_drink_counts_cast")
+  @@map("drink_counts")
+}
+
+model Customer {
+  id          String      @id @default(uuid()) @map("customer_id") @db.Uuid
+  tenantId    String      @map("tenant_id") @db.Uuid
+  name        String
+  kana        String?
+  memo        String?
+  deletedAt   DateTime?   @map("deleted_at") @db.Timestamptz(6)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  phoneNumber String?     @map("phone_number")
+  tenant      Tenant      @relation(fields: [tenantId], references: [id])
+  salesSlips  SalesSlip[]
+
+  @@index([tenantId], map: "idx_customers_tenant")
+  @@index([name], map: "idx_customers_name")
+  @@map("customers")
+}
+
+model DailyClose {
+  id           String    @id @default(uuid()) @map("close_id") @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  businessDate DateTime  @map("business_date") @db.Date
+  status       String    @default("open")
+  closedBy     String?   @map("closed_by") @db.Uuid
+  closedAt     DateTime? @map("closed_at") @db.Timestamptz(6)
+  closer       Account?  @relation("ClosedBy", fields: [closedBy], references: [id])
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, businessDate], name: "uq_daily_closes_tenant_date")
+  @@index([tenantId], map: "idx_daily_closes_tenant")
+  @@map("daily_closes")
+}
+
+model MonthlyClose {
+  id       String    @id @default(uuid()) @map("close_id") @db.Uuid
+  tenantId String    @map("tenant_id") @db.Uuid
+  month    String    @db.VarChar(7)
+  status   String    @default("open")
+  closedBy String?   @map("closed_by") @db.Uuid
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  closer   Account?  @relation("MonthlyClosedBy", fields: [closedBy], references: [id])
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, month], name: "uq_monthly_closes_tenant_month")
+  @@index([tenantId], map: "idx_monthly_closes_tenant")
+  @@map("monthly_closes")
+}
+
+model ChangeRequest {
+  id          String    @id @default(uuid()) @map("request_id") @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  targetType  String    @map("target_type")
+  targetId    String    @map("target_id") @db.Uuid
+  reason      String
+  status      String    @default("pending")
+  requestedBy String    @map("requested_by") @db.Uuid
+  approvedBy  String?   @map("approved_by") @db.Uuid
+  approvedAt  DateTime? @map("approved_at") @db.Timestamptz(6)
+  diffJson    Json      @map("diff_json")
+  approver    Account?  @relation("ApprovedBy", fields: [approvedBy], references: [id])
+  requester   Account   @relation("RequestedBy", fields: [requestedBy], references: [id])
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "idx_change_requests_tenant")
+  @@map("change_requests")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @map("log_id") @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  actorId       String   @map("actor_account_id") @db.Uuid
+  actorRole     String   @map("actor_role")
+  actionType    String   @map("action_type")
+  targetType    String   @map("target_type")
+  targetId      String   @map("target_id") @db.Uuid
+  beforeData    Json?    @map("before_data")
+  afterData     Json?    @map("after_data")
+  reason        String?
+  requestId     String?  @map("request_id") @db.Uuid
+  correlationId String?  @map("correlation_id") @db.Uuid
+  ipAddress     String?  @map("ip_address")
+  userAgent     String?  @map("user_agent")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  actor         Account  @relation("Actor", fields: [actorId], references: [id])
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId], map: "idx_audit_logs_tenant")
+  @@index([tenantId, targetType, targetId], map: "idx_audit_logs_target")
+  @@index([createdAt], map: "idx_audit_logs_created")
+  @@map("audit_logs")
+}
+
+model PriceItem {
+  id              String  @id @default(uuid()) @db.Uuid
+  tenantId        String  @map("tenant_id") @db.Uuid
+  itemCode        String  @map("item_code")
+  itemName        String  @map("item_name")
+  unitPrice       Int     @map("unit_price")
+  unit            String
+  chargeType      String  @default("PER_COUNT") @map("charge_type")
+  durationMinutes Int?    @map("duration_minutes")
+  applyPerPerson  Boolean @default(false) @map("apply_per_person")
+  isActive        Boolean @default(true) @map("is_active")
+  sortOrder       Int     @default(0) @map("sort_order")
+  tenant          Tenant  @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, itemCode], name: "uq_price_items_tenant_code")
+  @@index([tenantId], map: "idx_price_items_tenant")
+  @@map("price_items")
+}
+
+model Notification {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  targetAccountId String   @map("target_account_id") @db.Uuid
+  title           String
+  body            String
+  type            String
+  isRead          Boolean  @default(false) @map("is_read")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  target          Account  @relation(fields: [targetAccountId], references: [id])
+
+  @@index([tenantId], map: "idx_notifications_tenant")
+  @@index([targetAccountId], map: "idx_notifications_target")
+  @@index([targetAccountId, isRead], map: "idx_notifications_unread")
+  @@map("notifications")
+}

@@ -1,0 +1,21 @@
+{
+  "name": "nightops",
+  "private": true,
+  "version": "0.1.0",
+  "description": "NightOps - キャバクラ店舗向け運営SaaS",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@types/supertest": "^7.2.0",
+    "turbo": "^2.0.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

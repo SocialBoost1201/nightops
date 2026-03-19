@@ -1,0 +1,9 @@
+# Node/Next/Flutter General
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+.env*
+*.log
+.DS_Store

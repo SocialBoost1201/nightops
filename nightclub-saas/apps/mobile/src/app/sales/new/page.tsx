@@ -1,0 +1,97 @@
+"use client";
+
+import { ScreenLayout } from "@/components/layout/ScreenLayout";
+import { CustomNumpad } from "@/components/ui/CustomNumpad";
+import { SwipeToSubmit } from "@/components/ui/SwipeToSubmit";
+import { UndoToast } from "@/components/ui/UndoToast";
+import { clsx } from "clsx";
+import { useSalesInput } from "@/hooks/useSalesInput";
+import { useSoftSubmit } from "@/hooks/useSoftSubmit";
+
+export default function MobileSalesInputPage() {
+  const { amountRaw, formattedAmount, handleInput, handleDelete, handleClear, setAmountRaw } = useSalesInput();
+  const { isSubmitting, showSuccessFlash, undoState, handleSubmit, handleUndo, handleUndoDismiss } = useSoftSubmit(handleClear, setAmountRaw);
+
+  return (
+    <ScreenLayout
+      header={
+        <div className="flex items-center justify-between">
+          <button className="text-gray-400 p-2 -ml-2 select-none active:opacity-50">← 戻る</button>
+          <div className="text-sm font-bold text-gray-300">本日: 23:45 稼働中</div>
+          <button 
+            onClick={handleClear}
+            className="text-red-400 text-sm font-bold p-2 active:opacity-50 select-none"
+          >
+            クリア
+          </button>
+        </div>
+      }
+      footer={
+        <div className="w-full relative">
+          <CustomNumpad 
+            onInput={handleInput} 
+            onDelete={handleDelete} 
+            onClear={handleClear} 
+            disabled={isSubmitting || undoState.isVisible}
+          />
+          <div className="px-4 mt-2">
+            <SwipeToSubmit 
+              onConfirm={() => handleSubmit(amountRaw)} 
+              isLoading={isSubmitting}
+              disabled={amountRaw === "0" || undoState.isVisible}
+            />
+          </div>
+        </div>
+      }
+    >
+      {/* Screen-wide success flash */}
+      {showSuccessFlash && (
+        <div className="absolute inset-0 bg-green-500/20 z-50 pointer-events-none transition-opacity duration-1000 opacity-0 animate-[flash_1s_ease-out]" />
+      )}
+
+      {/* Undo Toast Overlay */}
+      <UndoToast
+        isVisible={undoState.isVisible}
+        message={`${undoState.castName}: ¥${Number(undoState.amount).toLocaleString()} を登録しました`}
+        onUndo={handleUndo}
+        onDismiss={handleUndoDismiss}
+        durationMs={5000}
+      />
+
+      <div className="w-full flex-1 flex flex-col justify-center relative z-10">
+        {/* Cast Selection */}
+        <div className="flex items-center justify-center gap-2 mb-6">
+          <div className="w-10 h-10 rounded-full bg-blue-900/50 flex items-center justify-center text-xl border border-blue-500/30">👩</div>
+          <span className="font-bold text-xl text-white">さくら</span>
+          <span className="text-gray-500 text-xs bg-gray-800 px-2 py-1 rounded-full">変更</span>
+        </div>
+
+        {/* Amount Display */}
+        <div className="flex flex-col items-center justify-center mb-10 w-full">
+          <p className="text-blue-500 text-sm mb-2 uppercase tracking-widest font-bold">入力金額</p>
+          <div 
+            className={clsx(
+              "text-6xl font-extrabold tracking-tighter flex items-end transition-colors duration-150",
+              amountRaw === "0" ? "text-gray-600" : "text-white"
+            )}
+            style={{ 
+              // Prevent scaling issues on very large numbers
+              fontSize: amountRaw.length > 6 ? "3.5rem" : "4rem",
+              lineHeight: 1 
+            }}
+          >
+            <span className={clsx(
+              "text-3xl mr-2 mb-1",
+              amountRaw === "0" ? "text-gray-700" : "text-blue-400"
+            )}>¥</span>
+            {formattedAmount}
+          </div>
+          
+          <div className="h-6 mt-4 text-blue-400/80 text-sm font-bold tracking-widest uppercase">
+            {amountRaw !== "0" ? "入力中..." : " "}
+          </div>
+        </div>
+      </div>
+    </ScreenLayout>
+  );
+}
