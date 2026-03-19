@@ -1,7 +1,5 @@
 'use client';
 
-export const dynamic = 'force-dynamic';
-
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -9,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { apiClient } from '@/lib/api';
 import Cookies from 'js-cookie';
 import { Eye, EyeOff, LogIn, CheckCircle2 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 
 
 const loginSchema = z.object({
@@ -22,7 +20,7 @@ const loginSchema = z.object({
 
 type LoginForm = z.infer<typeof loginSchema>;
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const passwordChanged = searchParams.get('changed') === '1';
@@ -151,5 +149,13 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#0B0B0C]" />}>
+      <LoginForm />
+    </Suspense>
   );
 }
