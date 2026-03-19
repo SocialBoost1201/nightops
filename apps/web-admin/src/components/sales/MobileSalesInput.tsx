@@ -9,9 +9,12 @@ import { Check, ChevronRight, AlertCircle, RotateCcw, Copy } from 'lucide-react'
 
 interface PriceItem {
   id: string;
-  name: string;
-  amount: number;
+  itemCode: string;
+  itemName: string;
+  unitPrice: number;
   chargeType: string;
+  applyPerPerson: boolean;
+  sortOrder: number;
 }
 
 interface SlipLine {
@@ -559,13 +562,13 @@ export function MobileSalesInput({ priceItems, onSubmit, recentSlips = [] }: Pro
                         updated[exists] = { ...updated[exists], quantity: updated[exists].quantity + 1 };
                         return { ...prev, drinks: updated };
                       }
-                      return { ...prev, drinks: [...prev.drinks, { itemId: item.id, name: item.name, quantity: 1, amount: item.amount }] };
+                      return { ...prev, drinks: [...prev.drinks, { itemId: item.id, name: item.itemName, quantity: 1, amount: item.unitPrice }] };
                     });
                   }}
                   className="py-3 px-2 bg-[#1E1E1E] rounded-xl text-sm font-medium text-gray-300 border border-[#2A2A2A] hover:border-gold-600/50 active:scale-95 transition-all text-left"
                 >
-                  <div className="text-xs text-gray-400 truncate">{item.name}</div>
-                  <div className="font-mono text-gold-500 text-sm">¥{item.amount.toLocaleString()}</div>
+                  <div className="text-xs text-gray-400 truncate">{item.itemName}</div>
+                  <div className="font-mono text-gold-500 text-sm">¥{item.unitPrice.toLocaleString()}</div>
                 </button>
               ))}
             </div>
