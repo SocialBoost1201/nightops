@@ -1,17 +1,43 @@
 'use client';
 
+import useSWR from 'swr';
+import { apiClient } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Users, Receipt, CalendarClock } from 'lucide-react';
 
+const fetcher = (url: string) => apiClient.get(url).then(res => res.data);
+
 export default function DashboardPage() {
   const { user } = useAuth();
+  const today = new Date().toISOString().split('T')[0];
 
-  // Mock data for MVP
+  const { data: attendance } = useSWR<any[]>(`/punches/today?businessDate=${today}`, fetcher);
+  const { data: pending } = useSWR<any[]>('/change-requests/pending', fetcher);
+
   const stats = [
-    { title: '本日出勤 (Cast)', value: '12名', icon: CalendarClock, color: 'text-blue-400', bg: 'bg-blue-400/10' },
-    { title: '未処理の申請', value: '2件', icon: Receipt, color: 'text-gold-400', bg: 'bg-gold-400/10' },
-    { title: '総登録スタッフ', value: '45名', icon: Users, color: 'text-green-400', bg: 'bg-green-400/10' },
+    {
+      title: '本日出勤 (Cast)',
+      value: attendance ? `${attendance.length}名` : '-',
+      icon: CalendarClock,
+      color: 'text-blue-400',
+      bg: 'bg-blue-400/10',
+    },
+    {
+      title: '未処理の申請',
+      value: pending ? `${pending.length}件` : '-',
+      icon: Receipt,
+      color: 'text-gold-400',
+      bg: 'bg-gold-400/10',
+    },
+    {
+      title: '本日の日付',
+      value: today,
+      icon: Users,
+      color: 'text-green-400',
+      bg: 'bg-green-400/10',
+    },
   ];
+
 
   return (
     <div className="p-6 md:p-8">
