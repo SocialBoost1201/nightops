@@ -80,4 +80,14 @@ export class MasterService {
 
         return updated;
     }
+
+    /**
+     * 料金マスタ一覧取得
+     */
+    async getPriceItems(user: RequestUser) {
+        return this.prisma.priceItem.findMany({
+            where: { tenantId: user.tenantId, isActive: true },
+            orderBy: { sortOrder: 'asc' },
+        });
+    }
 }

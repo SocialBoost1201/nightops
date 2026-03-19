@@ -16,18 +16,18 @@ import {
     RequestUser,
 } from '../../common';
 
-@Controller('master/settings')
+@Controller('master')
 @UseGuards(JwtAuthGuard, RolesGuard, TenantGuard)
 export class MasterController {
     constructor(private readonly masterService: MasterService) {}
 
-    @Get()
+    @Get('settings')
     @Roles('Manager', 'Admin', 'SystemAdmin')
     async getSettings(@CurrentUser() user: RequestUser) {
         return this.masterService.getSettings(user);
     }
 
-    @Put()
+    @Put('settings')
     @Roles('Admin', 'SystemAdmin')
     async updateSettings(
         @CurrentUser() user: RequestUser,
@@ -35,4 +35,11 @@ export class MasterController {
     ) {
         return this.masterService.updateSettings(user, dto);
     }
+
+    @Get('price-items')
+    @Roles('Manager', 'Admin', 'SystemAdmin')
+    async getPriceItems(@CurrentUser() user: RequestUser) {
+        return this.masterService.getPriceItems(user);
+    }
 }
+

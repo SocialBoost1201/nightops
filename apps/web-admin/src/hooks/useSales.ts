@@ -15,9 +15,14 @@ export interface SalesSlip {
 
 export interface PriceItem {
   id: string;
-  name: string;
-  amount: number;
-  chargeType: 'hourly' | 'fixed' | 'item';
+  itemCode: string;
+  itemName: string;
+  unitPrice: number;
+  unit: string;
+  chargeType: string;
+  durationMinutes: number | null;
+  applyPerPerson: boolean;
+  sortOrder: number;
 }
 
 export function useSales(dateStr?: string) {
@@ -25,7 +30,7 @@ export function useSales(dateStr?: string) {
 
   const { data: slips, error: slipsError, isLoading: isLoadingSlips, mutate } = useSWR<SalesSlip[]>(url, fetcher);
 
-  const { data: priceItems, error: itemsError, isLoading: isLoadingItems } = useSWR<PriceItem[]>('/settings/prices', fetcher);
+  const { data: priceItems, error: itemsError, isLoading: isLoadingItems } = useSWR<PriceItem[]>('/master/price-items', fetcher);
 
   const createSlip = async (slipData: any) => {
     try {
