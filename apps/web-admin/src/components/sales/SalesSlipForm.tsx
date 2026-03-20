@@ -44,7 +44,7 @@ export function SalesSlipForm({ priceItems, onSubmit }: Props) {
 
   const handleItemSelect = (id: string, itemId: string) => {
     const item = priceItems.find(p => p.id === itemId);
-    setLines(lines.map(l => l.id === id ? { ...l, itemId, amount: item?.amount ?? 0 } : l));
+    setLines(lines.map(l => l.id === id ? { ...l, itemId, amount: item?.unitPrice ?? 0 } : l));
   };
 
   const handleQuantityChange = (id: string, qty: number) =>
@@ -145,7 +145,7 @@ export function SalesSlipForm({ priceItems, onSubmit }: Props) {
                   >
                     <option value="">選択...</option>
                     {priceItems.map(item => (
-                      <option key={item.id} value={item.id}>{item.name} (¥{item.amount.toLocaleString()})</option>
+                      <option key={item.id} value={item.id}>{item.itemName} (¥{item.unitPrice.toLocaleString()})</option>
                     ))}
                   </select>
                 </div>
