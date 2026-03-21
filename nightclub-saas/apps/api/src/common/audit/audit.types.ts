@@ -21,6 +21,7 @@ export type AuditLogWriteInput = {
   requestId?: string | null;
   result?: AuditResult;
   source?: AuditLogSource;
+  auditMeta?: Record<string, unknown>;
   requireReason?: boolean;
 };
 

@@ -38,12 +38,18 @@ const normalizeAuditWriteInput = (req: Request, input: AuditLogRequestInput): Au
 };
 
 const buildAfterData = (input: AuditLogWriteInput): Record<string, unknown> => {
+  const auditMeta = sanitizeAuditPayload(input.auditMeta);
+  const safeAuditMeta = auditMeta && typeof auditMeta === 'object' && !Array.isArray(auditMeta)
+    ? (auditMeta as Record<string, unknown>)
+    : {};
+
   return {
     snapshot: input.after ?? null,
     __audit: {
       reason: input.reason ?? null,
       result: input.result ?? 'success',
       source: input.source ?? 'api',
+      ...safeAuditMeta,
     },
   };
 };
