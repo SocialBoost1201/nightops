@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { ClipboardList, Filter, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
@@ -17,6 +18,7 @@ import {
   type PendingApprovalsQuery,
   type PendingApprovalItem,
 } from '@/lib/approvalWorkflow';
+import { buildAuditLogHref } from '@/lib/auditNavigation';
 
 const DEFAULT_LIMIT = 20;
 const LIMIT_OPTIONS = [20, 50, 100] as const;
@@ -234,29 +236,42 @@ export default function PendingApprovalsPage() {
                     </td>
                     <td className="px-6 py-4 text-gray-400">{formatDateTime(item.createdAt)}</td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center justify-end gap-2">
-                        {item.requesterId === user?.accountId ? (
-                          <span className="text-[11px] text-amber-500 bg-amber-900/20 border border-amber-700/40 rounded px-2 py-1">
-                            自分の申請は処理不可
-                          </span>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => setDialogState({ mode: 'approve', item })}
-                              className="px-3 py-1.5 rounded border border-emerald-700/60 bg-emerald-900/20 text-emerald-300 text-xs hover:bg-emerald-900/30 transition-colors"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDialogState({ mode: 'reject', item })}
-                              className="px-3 py-1.5 rounded border border-red-700/60 bg-red-900/20 text-red-300 text-xs hover:bg-red-900/30 transition-colors"
-                            >
-                              Reject
-                            </button>
-                          </>
-                        )}
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="flex items-center justify-end gap-2">
+                          {item.requesterId === user?.accountId ? (
+                            <span className="text-[11px] text-amber-500 bg-amber-900/20 border border-amber-700/40 rounded px-2 py-1">
+                              自分の申請は処理不可
+                            </span>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setDialogState({ mode: 'approve', item })}
+                                className="px-3 py-1.5 rounded border border-emerald-700/60 bg-emerald-900/20 text-emerald-300 text-xs hover:bg-emerald-900/30 transition-colors"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDialogState({ mode: 'reject', item })}
+                                className="px-3 py-1.5 rounded border border-red-700/60 bg-red-900/20 text-red-300 text-xs hover:bg-red-900/30 transition-colors"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                        </div>
+                        <Link
+                          href={buildAuditLogHref({
+                            requestId: item.id,
+                            correlationId: item.correlationId,
+                            action: 'REQUEST_MONTHLY_UNLOCK',
+                            source: 'pending-approvals',
+                          })}
+                          className="text-[11px] text-sky-300 hover:text-sky-200 underline underline-offset-2"
+                        >
+                          監査ログを見る
+                        </Link>
                       </div>
                     </td>
                   </tr>

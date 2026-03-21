@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { FileClock, Filter, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
@@ -12,6 +13,7 @@ import {
   type UnlockRequestsQuery,
   type UnlockRequestStatus,
 } from '@/lib/approvalWorkflow';
+import { buildAuditLogHref, getUnlockAuditAction } from '@/lib/auditNavigation';
 
 const DEFAULT_LIMIT = 20;
 const LIMIT_OPTIONS = [20, 50, 100] as const;
@@ -221,6 +223,7 @@ export default function UnlockRequestHistoryPage() {
                   <th className="px-6 py-4 font-medium border-b border-gray-700">Approved At</th>
                   <th className="px-6 py-4 font-medium border-b border-gray-700">Rejected At</th>
                   <th className="px-6 py-4 font-medium border-b border-gray-700">Correlation</th>
+                  <th className="px-6 py-4 font-medium border-b border-gray-700 text-right">Audit</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
@@ -241,6 +244,19 @@ export default function UnlockRequestHistoryPage() {
                       <span className="font-mono text-[11px] text-gray-500 truncate block" title={item.correlationId ?? '-'}>
                         {item.correlationId ?? '-'}
                       </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <Link
+                        href={buildAuditLogHref({
+                          requestId: item.id,
+                          correlationId: item.correlationId,
+                          action: getUnlockAuditAction(item.status),
+                          source: 'unlock-request-history',
+                        })}
+                        className="text-[11px] text-sky-300 hover:text-sky-200 underline underline-offset-2"
+                      >
+                        監査ログを見る
+                      </Link>
                     </td>
                   </tr>
                 ))}
