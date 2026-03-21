@@ -7,11 +7,11 @@ import { useLogout } from '@/hooks/useLogout';
 import {
   Users, Calendar, Clock, Receipt, Settings,
   LayoutDashboard, ScrollText, FileEdit, BarChart3, Calculator, ShoppingBag,
-  LogOut, KeyRound,
+  LogOut, KeyRound, ShieldCheck,
 } from 'lucide-react';
 
 
-type Role = 'Admin' | 'Manager' | 'Cast';
+type Role = 'SystemAdmin' | 'Admin' | 'Manager' | 'Cast';
 
 interface NavItem {
   name: string;
@@ -30,8 +30,9 @@ const navItems: NavItem[] = [
   { name: '売上入力',         path: '/sales',         icon: Receipt,      allowedRoles: ['Admin', 'Manager'] },
   { name: '日次締め',         path: '/daily-close',   icon: ScrollText,   allowedRoles: ['Admin', 'Manager'] },
   { name: '集計・レポート',   path: '/reports',       icon: BarChart3,    allowedRoles: ['Admin', 'Manager'] },
+  { name: '承認待ち一覧',     path: '/approvals/pending', icon: ShieldCheck, allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: '給与・月次処理',   path: '/payroll',       icon: Calculator,   allowedRoles: ['Admin'] },
-  { name: '監査ログ',         path: '/audit-logs',    icon: ScrollText,   allowedRoles: ['Admin'] },
+  { name: '監査ログ',         path: '/audit-logs',    icon: ScrollText,   allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: 'マスタ設定',       path: '/settings',      icon: Settings,     allowedRoles: ['Admin'] },
 ];
 
@@ -59,8 +60,9 @@ export function Sidebar() {
           <div className="flex items-center justify-between">
             <p className="text-xs text-gray-300 font-medium truncate">{user.accountId}</p>
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase ml-2 shrink-0 ${
-              currentRole === 'Admin'   ? 'bg-gold-900/40 text-gold-400 border border-gold-800/40' :
-              currentRole === 'Manager' ? 'bg-blue-900/40 text-blue-400 border border-blue-800/40' :
+              currentRole === 'SystemAdmin' ? 'bg-red-900/40 text-red-400 border border-red-800/40' :
+              currentRole === 'Admin'       ? 'bg-gold-900/40 text-gold-400 border border-gold-800/40' :
+              currentRole === 'Manager'     ? 'bg-blue-900/40 text-blue-400 border border-blue-800/40' :
                                          'bg-gray-800 text-gray-500'
             }`}>
               {currentRole}
