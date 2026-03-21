@@ -1,83 +1,133 @@
 # Doc-45 Financial Audit and Closing
 
-## 1. 目的
-NightOps の売上修正・日次締め・月次確定を、会計監査に耐える証跡レベルで運用するためのルールを定義する。  
-本ドキュメントは「誰が、いつ、何を、なぜ変更したか」を再現可能にすることを目的とする。
+## 1. Objective
+This document defines financial governance rules for NightOps API around sales correction, daily close, monthly confirm, and monthly unlock.
+The goal is to make every critical financial change traceable, attributable, and auditable.
 
-## 2. 売上修正ルール
+## 2. Financial Change Rules
 
-対象:
+Target APIs:
 - `PATCH /sales/:id`
 - `POST /sales/change-requests/:id/approve`
 
-必須要件:
-- `reason` 必須（未指定は `422`）
-- `before` / `after` を監査ログに保存
-- `actorId` / `actorRole` / `tenantId` / `correlationId` を保存
-- 監査ログは `audit.service` 経由で strict 記録
+Requirements:
+- `reason` is mandatory for financial updates.
+- `before` and `after` snapshots are stored in audit logs.
+- `actorId`, `actorRole`, `tenantId`, and `correlationId` are persisted.
+- Audit logs are written through `audit.service` in `strict` mode.
 
-監査アクション:
+Audit actions:
 - `UPDATE_SALES_SLIP`
 - `APPROVE_SALES_CHANGE_REQUEST`
 
-## 3. 締めの定義
+## 3. Closing and Unlocking
 
-### 3.1 日次締め
-対象:
+### 3.1 Daily Close
+API:
 - `POST /reports/close/daily`
 
-処理:
-- `businessDate` ごとに締める
-- 当日伝票の `totalSales` を集計
-- `cashExpected`（= totalSales）と `cashActual`、`difference` を記録
-- 差額がある場合は `warning`（`CASH_DIFFERENCE_DETECTED`）をレスポンス/監査に残す
+Behavior:
+- Close by `businessDate`.
+- Store snapshot values: `totalSales`, `cashExpected`, `cashActual`, `difference`.
+- Keep warning signal when cash difference exists.
 
-監査アクション:
+Audit action:
 - `DAILY_CLOSE`
 
-### 3.2 月次確定
-対象:
+### 3.2 Monthly Confirm
+API:
 - `POST /reports/close/monthly`
 
-処理:
-- 対象月（`YYYY-MM`）の売上を集計
-- `monthly_closes.status = closed` に更新
-- 確定後は対象月の売上修正を禁止
+Behavior:
+- Confirm by `month` (`YYYY-MM`).
+- Lock monthly period for sales modifications.
 
-監査アクション:
+Audit action:
 - `MONTHLY_CONFIRM`
 
-### 3.3 月次解除（管理者のみ）
-対象:
-- `POST /reports/close/monthly/unlock`
+### 3.3 Monthly Unlock (4-eyes approval)
+APIs:
+- `POST /reports/close/monthly/unlock/request`
+- `POST /reports/close/monthly/unlock/approve`
 
-処理:
-- `Admin` / `SystemAdmin` のみ実行可能
-- 対象月を `open` に戻す
+Behavior:
+- Step 1 creates a pending unlock request.
+- Step 2 requires a different approver to execute unlock.
+- Unlock is never executed at request creation time.
 
-監査アクション:
-- `MONTHLY_UNLOCK`
+Audit actions:
+- `REQUEST_MONTHLY_UNLOCK`
+- `APPROVE_MONTHLY_UNLOCK`
 
-## 4. ロック仕様
+## 4. Unlock Request Data Model
+Table: `unlock_requests`
 
-売上修正時の判定:
-1. 対象営業日が `daily_closes.status = closed` の場合  
-   -> `409 CONFLICT`（日次締め済み）
-2. 対象月が `monthly_closes.status = closed` の場合  
-   -> `409 CONFLICT`（月次確定済み）
+Columns:
+- `unlock_request_id`
+- `tenant_id`
+- `month`
+- `requester_id`
+- `approver_id` (nullable)
+- `reason`
+- `status` (`PENDING`, `APPROVED`, `REJECTED`)
+- `created_at`
+- `approved_at`
 
-補足:
-- 売上日付を変更する更新では、更新前/更新後の営業日・月の両方でロック判定を行う。
-- 月次解除は管理者権限に限定する。
+## 5. Lock Rules
 
-## 5. 監査ログの意味
+Sales update is rejected (`409`) when:
+1. `daily_closes.status = closed` for the business date.
+2. `monthly_closes.status = closed` for the month.
 
-本仕様で残す監査ログは、以下の用途を満たす:
-- 会計変更の事後説明責任
-- 不正・誤操作の追跡
-- 問い合わせ時の再現性確保
-- APIレスポンスと監査ログの相互突合（`correlationId`）
+Date-change dual validation:
+- For sales date updates, lock checks run against both:
+  - original business date/month
+  - target business date/month
 
-監査ログに保存しない情報:
-- `password`, `passwordHash`, `token`, `refreshToken`, `secret`, `stripeSecret`, `authorization`, `cookie`  
-上記は共通 sanitize で `[REDACTED]` に置換する。
+This prevents lock bypass by moving data across dates.
+
+## 6. Validation and Error Behavior
+
+### 6.1 Unlock request validation
+- `month` is required in `YYYY-MM` format.
+- `reason` is required with minimum length 10.
+- Missing/invalid `reason` returns `422`.
+
+### 6.2 Unlock approval validation
+- `requestId` is required.
+- Approver must be different from requester.
+- Tenant boundary is enforced.
+- Only `Admin` and `SystemAdmin` can request/approve unlock.
+
+### 6.3 Error codes used
+- `422` for validation failures (`reason`, `requestId`, format).
+- `409` for locked/conflict state or invalid workflow state.
+- `403` for tenant boundary violations.
+
+## 7. Audit Contract Enhancements
+For monthly unlock actions, audit metadata includes:
+- `approvalFlow: "4-eyes"`
+- `requestId`
+
+Stored in:
+- `afterData.__audit.approvalFlow`
+- `afterData.__audit.requestId`
+
+`correlationId` is propagated from request context to all audit entries.
+
+## 8. Sensitive Data Handling
+The audit sanitize layer redacts sensitive fields, including:
+- `password`
+- `passwordHash`
+- `token`
+- `refreshToken`
+- `secret`
+- `stripeSecret`
+- `authorization`
+- `cookie`
+
+## 9. Current Limitations
+Out of scope for this phase:
+- Multi-approver quorum beyond 4-eyes.
+- Approval reason taxonomy and policy engine.
+- Dedicated audit search/read API and UI.
