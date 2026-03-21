@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '../prisma/generated/client';
+import { Prisma, PrismaClient } from '../prisma/generated/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import {
@@ -100,6 +100,59 @@ app.get('/me', authenticate, checkTenantStatus, async (req: Request, res: Respon
 // =======================
 
 const adminOnly = requireRoles(['Admin', 'SystemAdmin']);
+
+const MAX_AUDIT_LOG_LIMIT = 100;
+const DEFAULT_AUDIT_LOG_LIMIT = 20;
+
+type AuditSearchItem = {
+    id: string;
+    action: string;
+    actorId: string | null;
+    actorRole: string | null;
+    tenantId: string;
+    resourceType: string | null;
+    resourceId: string | null;
+    beforeData: Prisma.JsonValue | null;
+    afterData: Prisma.JsonValue | null;
+    correlationId: string | null;
+    createdAt: Date;
+    ipAddress?: string;
+    userAgent?: string;
+};
+
+const getOptionalString = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const parsePositiveInt = (value: unknown, field: string, defaultValue: number): number => {
+    const raw = getOptionalString(value);
+    if (!raw) {
+        return defaultValue;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, `${field} must be a positive integer`, field);
+    }
+    return parsed;
+};
+
+const parseDateFilter = (value: unknown, field: string): Date | undefined => {
+    const raw = getOptionalString(value);
+    if (!raw) {
+        return undefined;
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_DATE, `${field} must be a valid date`, field);
+    }
+    return parsed;
+};
+
+const isValidAuditActionFilter = (value: string): boolean => /^[A-Z0-9_]+$/.test(value);
 
 // POST /admin/accounts
 app.post('/admin/accounts', authenticate, checkTenantStatus, adminOnly, enforceTenantBoundary, async (req: Request, res: Response, next: NextFunction) => {
@@ -336,6 +389,128 @@ app.get('/admin/compensation-plans', authenticate, checkTenantStatus, adminOnly,
             where: { tenantId: targetTenantId }
         });
         res.json(plans);
+    } catch (error) {
+        next(error);
+	    }
+	});
+
+// GET /admin/audit-logs
+app.get('/admin/audit-logs', authenticate, checkTenantStatus, adminOnly, enforceTenantBoundary, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const user = (req as any).user as { tenantId: string; role: string };
+        const from = parseDateFilter(req.query.from, 'from');
+        const to = parseDateFilter(req.query.to, 'to');
+
+        if (from && to && from.getTime() > to.getTime()) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'from must be less than or equal to to', 'from');
+        }
+
+        const page = parsePositiveInt(req.query.page, 'page', 1);
+        const limit = parsePositiveInt(req.query.limit, 'limit', DEFAULT_AUDIT_LOG_LIMIT);
+        if (limit > MAX_AUDIT_LOG_LIMIT) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, `limit must be less than or equal to ${MAX_AUDIT_LOG_LIMIT}`, 'limit');
+        }
+
+        const action = getOptionalString(req.query.action);
+        if (action && !isValidAuditActionFilter(action)) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'action must match ^[A-Z0-9_]+$', 'action');
+        }
+
+        const actorId = getOptionalString(req.query.actorId);
+        const requestId = getOptionalString(req.query.requestId);
+        const correlationId = getOptionalString(req.query.correlationId);
+        const resourceType = getOptionalString(req.query.resourceType);
+        const resourceId = getOptionalString(req.query.resourceId);
+        const requestedTenantId = getOptionalString(req.query.tenantId);
+        const targetTenantId = user.role === 'SystemAdmin' ? requestedTenantId : user.tenantId;
+
+        const where: Prisma.AuditLogWhereInput = {};
+        if (targetTenantId) {
+            where.tenantId = targetTenantId;
+        }
+        if (action) {
+            where.actionType = action;
+        }
+        if (actorId) {
+            where.actorId = actorId;
+        }
+        if (requestId) {
+            where.requestId = requestId;
+        }
+        if (correlationId) {
+            where.correlationId = correlationId;
+        }
+        if (resourceType) {
+            where.targetType = resourceType;
+        }
+        if (resourceId) {
+            where.targetId = resourceId;
+        }
+        if (from || to) {
+            where.createdAt = {
+                ...(from ? { gte: from } : {}),
+                ...(to ? { lte: to } : {}),
+            };
+        }
+
+        const skip = (page - 1) * limit;
+        const [rows, total] = await Promise.all([
+            prisma.auditLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit,
+                select: {
+                    id: true,
+                    actionType: true,
+                    actorId: true,
+                    actorRole: true,
+                    tenantId: true,
+                    targetType: true,
+                    targetId: true,
+                    beforeData: true,
+                    afterData: true,
+                    correlationId: true,
+                    createdAt: true,
+                    ipAddress: true,
+                    userAgent: true,
+                },
+            }),
+            prisma.auditLog.count({ where }),
+        ]);
+
+        const items: AuditSearchItem[] = rows.map((row) => {
+            const item: AuditSearchItem = {
+                id: row.id,
+                action: row.actionType,
+                actorId: row.actorId,
+                actorRole: row.actorRole,
+                tenantId: row.tenantId,
+                resourceType: row.targetType,
+                resourceId: row.targetId,
+                beforeData: row.beforeData as Prisma.JsonValue | null,
+                afterData: row.afterData as Prisma.JsonValue | null,
+                correlationId: row.correlationId,
+                createdAt: row.createdAt,
+            };
+
+            if (row.ipAddress) {
+                item.ipAddress = row.ipAddress;
+            }
+            if (row.userAgent) {
+                item.userAgent = row.userAgent;
+            }
+            return item;
+        });
+
+        res.json({
+            items,
+            pagination: {
+                page,
+                limit,
+                total,
+            },
+        });
     } catch (error) {
         next(error);
     }
