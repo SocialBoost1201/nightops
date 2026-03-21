@@ -103,6 +103,10 @@ const adminOnly = requireRoles(['Admin', 'SystemAdmin']);
 
 const MAX_AUDIT_LOG_LIMIT = 100;
 const DEFAULT_AUDIT_LOG_LIMIT = 20;
+const MAX_WORKFLOW_LIST_LIMIT = 100;
+const DEFAULT_WORKFLOW_LIST_LIMIT = 20;
+const APPROVAL_TYPE_MONTHLY_UNLOCK = 'MONTHLY_UNLOCK';
+const ALLOWED_APPROVAL_TYPES = new Set([APPROVAL_TYPE_MONTHLY_UNLOCK]);
 
 type AuditSearchItem = {
     id: string;
@@ -118,6 +122,35 @@ type AuditSearchItem = {
     createdAt: Date;
     ipAddress?: string;
     userAgent?: string;
+};
+
+type PendingApprovalItem = {
+    id: string;
+    type: string;
+    tenantId: string;
+    month: string;
+    requesterId: string;
+    reason: string;
+    status: string;
+    createdAt: Date;
+    correlationId: string | null;
+    summary: {
+        month: string;
+    };
+};
+
+type UnlockRequestRow = {
+    id: string;
+    tenantId: string;
+    month: string;
+    requesterId: string;
+    approverId: string | null;
+    rejectorId: string | null;
+    reason: string;
+    status: string;
+    createdAt: Date;
+    approvedAt: Date | null;
+    rejectedAt: Date | null;
 };
 
 const getOptionalString = (value: unknown): string | undefined => {
@@ -153,6 +186,77 @@ const parseDateFilter = (value: unknown, field: string): Date | undefined => {
 };
 
 const isValidAuditActionFilter = (value: string): boolean => /^[A-Z0-9_]+$/.test(value);
+const validateDateRange = (from: Date | undefined, to: Date | undefined): void => {
+    if (from && to && from.getTime() > to.getTime()) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'from must be less than or equal to to', 'from');
+    }
+};
+
+const resolveTargetTenantId = (
+    user: { tenantId: string; role: string },
+    requestedTenantId: string | undefined,
+): string | undefined => {
+    if (user.role === 'SystemAdmin') {
+        return requestedTenantId;
+    }
+    return user.tenantId;
+};
+
+const parseWorkflowListLimit = (value: unknown): number => {
+    const limit = parsePositiveInt(value, 'limit', DEFAULT_WORKFLOW_LIST_LIMIT);
+    if (limit > MAX_WORKFLOW_LIST_LIMIT) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, `limit must be less than or equal to ${MAX_WORKFLOW_LIST_LIMIT}`, 'limit');
+    }
+    return limit;
+};
+
+const buildUnlockRequestWhereClause = (params: {
+    tenantId?: string;
+    status?: string;
+    month?: string;
+    requesterId?: string;
+    approverId?: string;
+    from?: Date;
+    to?: Date;
+}): { whereSql: string; values: Array<string | Date> } => {
+    const values: Array<string | Date> = [];
+    const conditions: string[] = [];
+
+    const addCondition = (sql: string, value: string | Date) => {
+        values.push(value);
+        conditions.push(`${sql} $${values.length}`);
+    };
+
+    if (params.tenantId) {
+        addCondition('tenant_id =', params.tenantId);
+        conditions[conditions.length - 1] += '::uuid';
+    }
+    if (params.status) {
+        addCondition('status =', params.status);
+    }
+    if (params.month) {
+        addCondition('month =', params.month);
+    }
+    if (params.requesterId) {
+        addCondition('requester_id =', params.requesterId);
+        conditions[conditions.length - 1] += '::uuid';
+    }
+    if (params.approverId) {
+        addCondition('approver_id =', params.approverId);
+        conditions[conditions.length - 1] += '::uuid';
+    }
+    if (params.from) {
+        addCondition('created_at >=', params.from);
+    }
+    if (params.to) {
+        addCondition('created_at <=', params.to);
+    }
+
+    return {
+        whereSql: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+        values,
+    };
+};
 
 // POST /admin/accounts
 app.post('/admin/accounts', authenticate, checkTenantStatus, adminOnly, enforceTenantBoundary, async (req: Request, res: Response, next: NextFunction) => {
@@ -502,6 +606,114 @@ app.get('/admin/audit-logs', authenticate, checkTenantStatus, adminOnly, enforce
             }
             return item;
         });
+
+        res.json({
+            items,
+            pagination: {
+                page,
+                limit,
+                total,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// GET /admin/approvals/pending
+app.get('/admin/approvals/pending', authenticate, checkTenantStatus, adminOnly, enforceTenantBoundary, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const user = (req as any).user as { tenantId: string; role: string };
+        const type = getOptionalString(req.query.type);
+        const from = parseDateFilter(req.query.from, 'from');
+        const to = parseDateFilter(req.query.to, 'to');
+        validateDateRange(from, to);
+
+        if (type && !ALLOWED_APPROVAL_TYPES.has(type)) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'type must be MONTHLY_UNLOCK', 'type');
+        }
+
+        const page = parsePositiveInt(req.query.page, 'page', 1);
+        const limit = parseWorkflowListLimit(req.query.limit);
+        const requestedTenantId = getOptionalString(req.query.tenantId);
+        const targetTenantId = resolveTargetTenantId(user, requestedTenantId);
+        const skip = (page - 1) * limit;
+        const { whereSql, values } = buildUnlockRequestWhereClause({
+            tenantId: targetTenantId,
+            status: 'PENDING',
+            from,
+            to,
+        });
+        const rowsQuery = `
+            SELECT
+                unlock_request_id AS "id",
+                tenant_id AS "tenantId",
+                month,
+                requester_id AS "requesterId",
+                approver_id AS "approverId",
+                rejector_id AS "rejectorId",
+                reason,
+                status,
+                created_at AS "createdAt",
+                approved_at AS "approvedAt",
+                rejected_at AS "rejectedAt"
+            FROM unlock_requests
+            ${whereSql}
+            ORDER BY created_at ASC
+            LIMIT $${values.length + 1}
+            OFFSET $${values.length + 2}
+        `;
+        const countQuery = `
+            SELECT COUNT(*)::int AS total
+            FROM unlock_requests
+            ${whereSql}
+        `;
+
+        const [rows, countRows] = await Promise.all([
+            prisma.$queryRawUnsafe<UnlockRequestRow[]>(rowsQuery, ...values, limit, skip),
+            prisma.$queryRawUnsafe<{ total: number }[]>(countQuery, ...values),
+        ]);
+        const total = countRows[0]?.total ?? 0;
+
+        const unlockRequestIds = rows.map((row) => row.id);
+        const correlationMap = new Map<string, string | null>();
+
+        if (unlockRequestIds.length > 0) {
+            const auditRows = await prisma.auditLog.findMany({
+                where: {
+                    targetType: 'UnlockRequest',
+                    targetId: { in: unlockRequestIds },
+                    actionType: 'REQUEST_MONTHLY_UNLOCK',
+                },
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    targetId: true,
+                    correlationId: true,
+                },
+            });
+
+            for (const auditRow of auditRows) {
+                if (!auditRow.targetId || correlationMap.has(auditRow.targetId)) {
+                    continue;
+                }
+                correlationMap.set(auditRow.targetId, auditRow.correlationId);
+            }
+        }
+
+        const items: PendingApprovalItem[] = rows.map((row) => ({
+            id: row.id,
+            type: APPROVAL_TYPE_MONTHLY_UNLOCK,
+            tenantId: row.tenantId,
+            month: row.month,
+            requesterId: row.requesterId,
+            reason: row.reason,
+            status: row.status,
+            createdAt: row.createdAt,
+            correlationId: correlationMap.get(row.id) ?? null,
+            summary: {
+                month: row.month,
+            },
+        }));
 
         res.json({
             items,
