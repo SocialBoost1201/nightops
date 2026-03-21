@@ -288,6 +288,12 @@ import attendanceRouter from './routes/attendance';
 app.use('/attendance', attendanceRouter);
 
 // =======================
+// レポートルーター
+// =======================
+import reportsRouter from './routes/reports';
+app.use('/reports', reportsRouter);
+
+// =======================
 // 課金・SaaSルーター (billing)
 // =======================
 import billingRouter from './routes/billing';
