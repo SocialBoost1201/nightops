@@ -9,8 +9,10 @@ import {
   type AuditLogFilterValues,
 } from '@/components/audit/AuditLogFilterBar';
 import { AuditLogTable } from '@/components/audit/AuditLogTable';
+import { AuditLogDetailPanel } from '@/components/audit/AuditLogDetailPanel';
 import {
   fetchAuditLogs,
+  type AuditLogItem,
   type AuditLogQuery,
 } from '@/lib/auditWorkflow';
 
@@ -34,6 +36,7 @@ export default function AuditLogsPage() {
   const [filters, setFilters] = useState<AuditLogFilterValues>(INITIAL_FILTERS);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [selectedItem, setSelectedItem] = useState<AuditLogItem | null>(null);
 
   const query = useMemo<AuditLogQuery>(() => ({
     from: filters.from || undefined,
@@ -112,11 +115,14 @@ export default function AuditLogsPage() {
           onRetry={() => mutate()}
           onPrevPage={() => setPage((current) => Math.max(1, current - 1))}
           onNextPage={() => setPage((current) => current + 1)}
-          onOpenDetail={() => {
-            // Detail panel will be wired in the next change-set.
-          }}
+          onOpenDetail={(item) => setSelectedItem(item)}
         />
       </div>
+
+      <AuditLogDetailPanel
+        item={selectedItem}
+        onClose={() => setSelectedItem(null)}
+      />
     </div>
   );
 }
