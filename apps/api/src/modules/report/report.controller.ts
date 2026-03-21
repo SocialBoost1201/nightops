@@ -23,7 +23,7 @@ export class ReportController {
     @Roles('Manager', 'Admin', 'SystemAdmin')
     async dailySummary(
         @CurrentUser() user: RequestUser,
-        @Query('businessDate') businessDate: string,
+        @Query('businessDate') businessDate?: string,
     ) {
         return this.reportService.dailySummary(user, businessDate);
     }
@@ -32,8 +32,8 @@ export class ReportController {
     @Roles('Manager', 'Admin', 'SystemAdmin')
     async castSalesRanking(
         @CurrentUser() user: RequestUser,
-        @Query('from') from: string,
-        @Query('to') to: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
     ) {
         return this.reportService.castSalesRanking(user, from, to);
     }
@@ -42,8 +42,8 @@ export class ReportController {
     @Roles('Manager', 'Admin', 'SystemAdmin')
     async drinkRanking(
         @CurrentUser() user: RequestUser,
-        @Query('from') from: string,
-        @Query('to') to: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
     ) {
         return this.reportService.drinkRanking(user, from, to);
     }
@@ -52,8 +52,8 @@ export class ReportController {
     @Roles('Manager', 'Admin', 'SystemAdmin')
     async nominationRanking(
         @CurrentUser() user: RequestUser,
-        @Query('from') from: string,
-        @Query('to') to: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
     ) {
         return this.reportService.nominationRanking(user, from, to);
     }
