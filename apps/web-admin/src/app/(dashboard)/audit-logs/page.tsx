@@ -6,10 +6,10 @@ import { ScrollText } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   AuditLogFilterBar,
+  AuditLogTable,
+  AuditLogDetailPanel,
   type AuditLogFilterValues,
-} from '@/components/audit/AuditLogFilterBar';
-import { AuditLogTable } from '@/components/audit/AuditLogTable';
-import { AuditLogDetailPanel } from '@/components/audit/AuditLogDetailPanel';
+} from '@/components/audit';
 import {
   fetchAuditLogs,
   type AuditLogItem,
