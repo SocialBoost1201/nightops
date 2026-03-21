@@ -31,6 +31,7 @@ model Tenant {
   priceItems     PriceItem[]
   dailyCloses    DailyClose[]
   monthlyCloses  MonthlyClose[]
+  unlockRequests UnlockRequest[]
   auditLogs      AuditLog[]
   changeRequests ChangeRequest[]
 
@@ -80,6 +81,8 @@ model Account {
   salesSlips             SalesSlip[]        @relation("MainCast")
   dailyClosesBy          DailyClose[]       @relation("ClosedBy")
   monthlyClosesBy        MonthlyClose[]     @relation("MonthlyClosedBy")
+  requestedUnlocks       UnlockRequest[]    @relation("MonthlyUnlockRequestedBy")
+  approvedUnlocks        UnlockRequest[]    @relation("MonthlyUnlockApprovedBy")
   salesSlipsClosedBy     SalesSlip[]        @relation("SlipClosedBy")
   changeRequestsBy       ChangeRequest[]    @relation("RequestedBy")
   changeRequestsApproved ChangeRequest[]    @relation("ApprovedBy")
@@ -344,6 +347,26 @@ model MonthlyClose {
   @@map("monthly_closes")
 }
 
+model UnlockRequest {
+  id          String    @id @default(uuid()) @map("unlock_request_id") @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  month       String    @db.VarChar(7)
+  requesterId String    @map("requester_id") @db.Uuid
+  approverId  String?   @map("approver_id") @db.Uuid
+  reason      String    @db.Text
+  status      String    @db.VarChar(20)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  approvedAt  DateTime? @map("approved_at") @db.Timestamptz
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  requester Account  @relation("MonthlyUnlockRequestedBy", fields: [requesterId], references: [id])
+  approver  Account? @relation("MonthlyUnlockApprovedBy", fields: [approverId], references: [id])
+
+  @@index([tenantId, month], name: "idx_unlock_requests_tenant_month")
+  @@index([tenantId, status], name: "idx_unlock_requests_tenant_status")
+  @@map("unlock_requests")
+}
+
 model ChangeRequest {
   id          String    @id @default(uuid()) @map("request_id") @db.Uuid
   tenantId    String    @map("tenant_id") @db.Uuid
@@ -476,4 +499,3 @@ model StripeEvent {
 
   @@map("stripe_events")
 }
-
