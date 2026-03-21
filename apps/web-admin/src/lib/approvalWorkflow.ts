@@ -2,6 +2,7 @@ import axios from 'axios';
 import { apiClient } from '@/lib/api';
 
 export type ApprovalType = 'MONTHLY_UNLOCK';
+export type UnlockRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 export interface PaginationInfo {
   page: number;
@@ -28,6 +29,33 @@ export interface PendingApprovalItem {
 
 export interface PendingApprovalsQuery {
   type?: ApprovalType;
+  from?: string;
+  to?: string;
+  tenantId?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface UnlockRequestItem {
+  id: string;
+  tenantId: string;
+  month: string;
+  requesterId: string;
+  approverId: string | null;
+  rejectorId: string | null;
+  reason: string;
+  status: UnlockRequestStatus;
+  createdAt: string;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  correlationId: string | null;
+}
+
+export interface UnlockRequestsQuery {
+  status?: UnlockRequestStatus;
+  month?: string;
+  requesterId?: string;
+  approverId?: string;
   from?: string;
   to?: string;
   tenantId?: string;
@@ -89,11 +117,37 @@ export async function fetchPendingApprovals(query: PendingApprovalsQuery): Promi
   return unwrapListResponse<PendingApprovalItem>(response.data);
 }
 
+export async function fetchUnlockRequests(query: UnlockRequestsQuery): Promise<WorkflowListResponse<UnlockRequestItem>> {
+  const params = toQueryParams({
+    status: query.status,
+    month: query.month,
+    requesterId: query.requesterId,
+    approverId: query.approverId,
+    from: query.from,
+    to: query.to,
+    tenantId: query.tenantId,
+    page: query.page,
+    limit: query.limit,
+  });
+  const response = await apiClient.get('/admin/unlock-requests', { params });
+  return unwrapListResponse<UnlockRequestItem>(response.data);
+}
+
 export function formatApprovalType(value: ApprovalType): string {
   if (value === 'MONTHLY_UNLOCK') {
     return 'Monthly Unlock';
   }
   return value;
+}
+
+export function formatUnlockRequestStatus(value: UnlockRequestStatus): string {
+  if (value === 'APPROVED') {
+    return 'Approved';
+  }
+  if (value === 'REJECTED') {
+    return 'Rejected';
+  }
+  return 'Pending';
 }
 
 export function formatDateTime(value: string | null | undefined): string {

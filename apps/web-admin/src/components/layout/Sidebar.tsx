@@ -31,6 +31,7 @@ const navItems: NavItem[] = [
   { name: '日次締め',         path: '/daily-close',   icon: ScrollText,   allowedRoles: ['Admin', 'Manager'] },
   { name: '集計・レポート',   path: '/reports',       icon: BarChart3,    allowedRoles: ['Admin', 'Manager'] },
   { name: '承認待ち一覧',     path: '/approvals/pending', icon: ShieldCheck, allowedRoles: ['SystemAdmin', 'Admin'] },
+  { name: 'アンロック履歴',   path: '/approvals/unlock-requests', icon: ShieldCheck, allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: '給与・月次処理',   path: '/payroll',       icon: Calculator,   allowedRoles: ['Admin'] },
   { name: '監査ログ',         path: '/audit-logs',    icon: ScrollText,   allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: 'マスタ設定',       path: '/settings',      icon: Settings,     allowedRoles: ['Admin'] },
