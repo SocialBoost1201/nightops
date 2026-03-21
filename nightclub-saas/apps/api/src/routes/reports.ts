@@ -14,6 +14,7 @@ const router = Router();
 const prisma = new PrismaClient();
 
 const reportRoles = requireRoles(['Manager', 'Admin', 'SystemAdmin']);
+const financeCloseRoles = requireRoles(['Admin', 'SystemAdmin']);
 
 const resolveTargetTenantId = (req: Request): string => {
   const user = (req as any).user;
@@ -76,6 +77,29 @@ const resolveDateRange = (fromQuery: unknown, toQuery: unknown) => {
   }
 
   return { fromString, toString, fromDate, toDate };
+};
+
+const YEAR_MONTH_RE = /^(\d{4})-(\d{2})$/;
+
+const resolveMonthRange = (monthValue: unknown): { month: string; fromDate: Date; toDate: Date } => {
+  if (!monthValue) {
+    throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'month is required', 'month');
+  }
+  const month = String(monthValue);
+  const match = month.match(YEAR_MONTH_RE);
+  if (!match) {
+    throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'month must be YYYY-MM format', 'month');
+  }
+
+  const year = Number(match[1]);
+  const monthNumber = Number(match[2]);
+  if (monthNumber < 1 || monthNumber > 12) {
+    throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'month must be YYYY-MM format', 'month');
+  }
+
+  const fromDate = new Date(Date.UTC(year, monthNumber - 1, 1));
+  const toDate = new Date(Date.UTC(year, monthNumber, 0));
+  return { month, fromDate, toDate };
 };
 
 /**
@@ -214,6 +238,164 @@ router.post(
         cashActual,
         difference,
         warning: hasDifference ? 'CASH_DIFFERENCE_DETECTED' : null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/close/monthly',
+  authenticate,
+  checkTenantStatus,
+  financeCloseRoles,
+  enforceTenantBoundary,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as any).user;
+      const tenantId = resolveTargetTenantId(req);
+      const { month, fromDate, toDate } = resolveMonthRange(req.body?.month ?? req.query.month);
+
+      const existingClose = await prisma.monthlyClose.findUnique({
+        where: {
+          uq_monthly_closes_tenant_month: {
+            tenantId,
+            month,
+          },
+        },
+      });
+      if (existingClose?.status === 'closed') {
+        throw new APIError(409, AppErrorCodes.CONFLICT, 'This month is already confirmed');
+      }
+
+      const slips = await prisma.salesSlip.findMany({
+        where: {
+          tenantId,
+          businessDate: {
+            gte: fromDate,
+            lte: toDate,
+          },
+        },
+      });
+      const totalSales = slips.reduce((sum, slip) => sum + slip.totalRounded, 0);
+
+      const confirmed = await prisma.$transaction(async (tx) => {
+        const close = await tx.monthlyClose.upsert({
+          where: {
+            uq_monthly_closes_tenant_month: {
+              tenantId,
+              month,
+            },
+          },
+          update: {
+            status: 'closed',
+            closedBy: String(user.id),
+            closedAt: new Date(),
+          },
+          create: {
+            tenantId,
+            month,
+            status: 'closed',
+            closedBy: String(user.id),
+            closedAt: new Date(),
+          },
+        });
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: 'MONTHLY_CONFIRM',
+          resourceType: 'MonthlyClose',
+          resourceId: close.id,
+          tenantId,
+          before: {
+            month,
+            status: existingClose?.status ?? 'open',
+          },
+          after: {
+            month,
+            totalSales,
+            confirmed: true,
+            status: 'closed',
+          },
+          reason: req.body?.reason ?? null,
+          requireReason: true,
+        }, 'strict');
+
+        return close;
+      });
+
+      res.json({
+        closeId: confirmed.id,
+        month,
+        status: confirmed.status,
+        totalSales,
+        confirmed: true,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/close/monthly/unlock',
+  authenticate,
+  checkTenantStatus,
+  financeCloseRoles,
+  enforceTenantBoundary,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const tenantId = resolveTargetTenantId(req);
+      const { month } = resolveMonthRange(req.body?.month ?? req.query.month);
+
+      const existingClose = await prisma.monthlyClose.findUnique({
+        where: {
+          uq_monthly_closes_tenant_month: {
+            tenantId,
+            month,
+          },
+        },
+      });
+      if (!existingClose || existingClose.status !== 'closed') {
+        throw new APIError(409, AppErrorCodes.CONFLICT, 'This month is not in confirmed state');
+      }
+
+      const unlocked = await prisma.$transaction(async (tx) => {
+        const close = await tx.monthlyClose.update({
+          where: { id: existingClose.id },
+          data: {
+            status: 'open',
+            closedBy: null,
+            closedAt: null,
+          },
+        });
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: 'MONTHLY_UNLOCK',
+          resourceType: 'MonthlyClose',
+          resourceId: close.id,
+          tenantId,
+          before: {
+            month,
+            status: existingClose.status,
+          },
+          after: {
+            month,
+            status: close.status,
+            confirmed: false,
+          },
+          reason: req.body?.reason ?? null,
+          requireReason: true,
+        }, 'strict');
+
+        return close;
+      });
+
+      res.json({
+        closeId: unlocked.id,
+        month,
+        status: unlocked.status,
+        confirmed: false,
       });
     } catch (error) {
       next(error);

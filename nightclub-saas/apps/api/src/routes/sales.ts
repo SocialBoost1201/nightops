@@ -66,6 +66,10 @@ const extractSlipSnapshot = (slip: {
   };
 };
 
+const getMonthKey = (date: Date): string => {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
 const assertNotDailyClosed = async (tx: Pick<PrismaClient, 'dailyClose'>, tenantId: string, businessDate: Date): Promise<void> => {
   const close = await tx.dailyClose.findUnique({
     where: {
@@ -79,6 +83,22 @@ const assertNotDailyClosed = async (tx: Pick<PrismaClient, 'dailyClose'>, tenant
 
   if (close?.status === 'closed') {
     throw new APIError(409, AppErrorCodes.CONFLICT, 'Daily close has already been completed for this businessDate');
+  }
+};
+
+const assertNotMonthlyConfirmed = async (tx: Pick<PrismaClient, 'monthlyClose'>, tenantId: string, month: string): Promise<void> => {
+  const close = await tx.monthlyClose.findUnique({
+    where: {
+      uq_monthly_closes_tenant_month: {
+        tenantId,
+        month,
+      },
+    },
+    select: { status: true },
+  });
+
+  if (close?.status === 'closed') {
+    throw new APIError(409, AppErrorCodes.CONFLICT, 'Monthly confirmation has already locked this period');
   }
 };
 
@@ -111,7 +131,14 @@ router.patch(
 
       const before = extractSlipSnapshot(existing);
       const updated = await prisma.$transaction(async (tx) => {
+        const targetBusinessDate = (updateData.businessDate as Date | undefined) ?? existing.businessDate;
+        const existingMonth = getMonthKey(existing.businessDate);
+        const targetMonth = getMonthKey(targetBusinessDate);
+
         await assertNotDailyClosed(tx, existing.tenantId, existing.businessDate);
+        await assertNotDailyClosed(tx, existing.tenantId, targetBusinessDate);
+        await assertNotMonthlyConfirmed(tx, existing.tenantId, existingMonth);
+        await assertNotMonthlyConfirmed(tx, existing.tenantId, targetMonth);
 
         const changed = await tx.salesSlip.update({
           where: { id },
@@ -184,7 +211,14 @@ router.post(
       const beforeSlip = extractSlipSnapshot(targetSlip);
 
       const result = await prisma.$transaction(async (tx) => {
+        const patchDate = (updateData.businessDate as Date | undefined) ?? targetSlip.businessDate;
+        const existingMonth = getMonthKey(targetSlip.businessDate);
+        const targetMonth = getMonthKey(patchDate);
+
         await assertNotDailyClosed(tx, targetSlip.tenantId, targetSlip.businessDate);
+        await assertNotDailyClosed(tx, targetSlip.tenantId, patchDate);
+        await assertNotMonthlyConfirmed(tx, targetSlip.tenantId, existingMonth);
+        await assertNotMonthlyConfirmed(tx, targetSlip.tenantId, targetMonth);
 
         const updatedSlip = await tx.salesSlip.update({
           where: { id: targetSlip.id },
