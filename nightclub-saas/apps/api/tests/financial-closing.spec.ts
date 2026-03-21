@@ -77,10 +77,12 @@ type UnlockRequestRecord = {
   month: string;
   requesterId: string;
   approverId: string | null;
+  rejectorId: string | null;
   reason: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   createdAt: Date;
   approvedAt: Date | null;
+  rejectedAt: Date | null;
 };
 
 let unlockRequests: UnlockRequestRecord[] = [];
@@ -219,27 +221,43 @@ describe('Financial Audit and Closing', () => {
           month: String(month),
           requesterId: String(requesterId),
           approverId: null,
+          rejectorId: null,
           reason: String(reason),
           status: String(status) as UnlockRequestRecord['status'],
           createdAt: new Date('2026-03-21T12:00:00Z'),
           approvedAt: null,
+          rejectedAt: null,
         };
         unlockRequests.push(record);
         return [{ ...record }];
       }
 
       if (queryText.includes('UPDATE unlock_requests')) {
-        const [status, approverId, requestId] = values;
+        const [status, actorId, requestId] = values;
         const index = unlockRequests.findIndex((item) => item.id === String(requestId));
         if (index < 0) {
           return [];
         }
-        const nextRecord: UnlockRequestRecord = {
-          ...unlockRequests[index],
-          status: String(status) as UnlockRequestRecord['status'],
-          approverId: String(approverId),
-          approvedAt: new Date('2026-03-21T12:10:00Z'),
-        };
+
+        const statusValue = String(status) as UnlockRequestRecord['status'];
+        const nextRecord: UnlockRequestRecord =
+          statusValue === 'REJECTED'
+            ? {
+              ...unlockRequests[index],
+              status: statusValue,
+              approverId: null,
+              approvedAt: null,
+              rejectorId: String(actorId),
+              rejectedAt: new Date('2026-03-21T12:10:00Z'),
+            }
+            : {
+              ...unlockRequests[index],
+              status: statusValue,
+              approverId: String(actorId),
+              approvedAt: new Date('2026-03-21T12:10:00Z'),
+              rejectorId: null,
+              rejectedAt: null,
+            };
         unlockRequests[index] = nextRecord;
         return [{ ...nextRecord }];
       }
@@ -481,5 +499,191 @@ describe('Financial Audit and Closing', () => {
     expect(res.status).toBe(422);
     expect(res.body.success).toBe(false);
     expect(res.body.error.field).toBe('reason');
+  });
+
+  it('11. monthly unlock reject works without executing unlock', async () => {
+    monthlyCloseState = {
+      ...monthlyCloseState,
+      status: 'closed',
+      closedBy: 'admin-001',
+      closedAt: new Date('2026-03-31T23:59:00Z'),
+    };
+
+    const requesterToken = makeToken('Admin', 'tenant-aaa', 'admin-001');
+    const requestRes = await request(app)
+      .post('/reports/close/monthly/unlock/request')
+      .set('Authorization', `Bearer ${requesterToken}`)
+      .send({
+        month: '2026-03',
+        reason: 'Request unlock for post-close bookkeeping correction',
+      });
+
+    const rejectorToken = makeToken('SystemAdmin', 'tenant-root', 'sys-003');
+    const rejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${rejectorToken}`)
+      .send({
+        tenantId: 'tenant-aaa',
+        requestId: requestRes.body.data.requestId,
+        reason: 'Rejected because evidence package is incomplete',
+      });
+
+    expect(rejectRes.status).toBe(200);
+    expect(rejectRes.body.success).toBe(true);
+    expect(rejectRes.body.data.unlockRequestStatus).toBe('REJECTED');
+    expect(monthlyCloseState.status).toBe('closed');
+    expect(prismaMock.monthlyClose.update).not.toHaveBeenCalled();
+
+    const rejectAuditCall = prismaMock.auditLog.create.mock.calls.find(
+      (call: any) => call[0].data.actionType === 'REJECT_MONTHLY_UNLOCK',
+    );
+    expect(rejectAuditCall).toBeDefined();
+    expect(rejectAuditCall![0].data.afterData.__audit.approvalFlow).toBe('4-eyes');
+    expect(rejectAuditCall![0].data.afterData.__audit.requestId).toBe(requestRes.body.data.requestId);
+  });
+
+  it('12. same user cannot reject own monthly unlock request', async () => {
+    monthlyCloseState = {
+      ...monthlyCloseState,
+      status: 'closed',
+      closedBy: 'admin-001',
+      closedAt: new Date('2026-03-31T23:59:00Z'),
+    };
+
+    const token = makeToken('Admin', 'tenant-aaa', 'admin-001');
+    const requestRes = await request(app)
+      .post('/reports/close/monthly/unlock/request')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        month: '2026-03',
+        reason: 'Unlock request due discrepancy in monthly reconciliation',
+      });
+
+    const rejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        requestId: requestRes.body.data.requestId,
+        reason: 'Trying to reject own request should fail',
+      });
+
+    expect(rejectRes.status).toBe(409);
+    expect(rejectRes.body.success).toBe(false);
+    expect(rejectRes.body.error.code).toBe('CONFLICT');
+  });
+
+  it('13. monthly unlock reject requires reason with minimum length', async () => {
+    const token = makeToken('Admin', 'tenant-aaa', 'admin-001');
+    const rejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        requestId: 'req-001',
+        reason: 'short',
+      });
+
+    expect(rejectRes.status).toBe(422);
+    expect(rejectRes.body.success).toBe(false);
+    expect(rejectRes.body.error.field).toBe('reason');
+  });
+
+  it('14. cannot reject an already approved unlock request', async () => {
+    monthlyCloseState = {
+      ...monthlyCloseState,
+      status: 'closed',
+      closedBy: 'admin-001',
+      closedAt: new Date('2026-03-31T23:59:00Z'),
+    };
+
+    const requesterToken = makeToken('Admin', 'tenant-aaa', 'admin-001');
+    const requestRes = await request(app)
+      .post('/reports/close/monthly/unlock/request')
+      .set('Authorization', `Bearer ${requesterToken}`)
+      .send({
+        month: '2026-03',
+        reason: 'Unlock request for approved correction sequence',
+      });
+
+    const approveToken = makeToken('SystemAdmin', 'tenant-root', 'sys-002');
+    await request(app)
+      .post('/reports/close/monthly/unlock/approve')
+      .set('Authorization', `Bearer ${approveToken}`)
+      .send({
+        tenantId: 'tenant-aaa',
+        requestId: requestRes.body.data.requestId,
+      });
+
+    const rejectToken = makeToken('SystemAdmin', 'tenant-root', 'sys-004');
+    const rejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${rejectToken}`)
+      .send({
+        tenantId: 'tenant-aaa',
+        requestId: requestRes.body.data.requestId,
+        reason: 'Reject after approval should be blocked by workflow',
+      });
+
+    expect(rejectRes.status).toBe(409);
+    expect(rejectRes.body.success).toBe(false);
+    expect(rejectRes.body.error.code).toBe('CONFLICT');
+  });
+
+  it('15. monthly unlock reject fails when reason is missing', async () => {
+    const token = makeToken('Admin', 'tenant-aaa', 'admin-002');
+    const rejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        requestId: 'req-002',
+      });
+
+    expect(rejectRes.status).toBe(422);
+    expect(rejectRes.body.success).toBe(false);
+    expect(rejectRes.body.error.field).toBe('reason');
+  });
+
+  it('16. cannot reject an already rejected unlock request', async () => {
+    monthlyCloseState = {
+      ...monthlyCloseState,
+      status: 'closed',
+      closedBy: 'admin-001',
+      closedAt: new Date('2026-03-31T23:59:00Z'),
+    };
+
+    const requesterToken = makeToken('Admin', 'tenant-aaa', 'admin-001');
+    const requestRes = await request(app)
+      .post('/reports/close/monthly/unlock/request')
+      .set('Authorization', `Bearer ${requesterToken}`)
+      .send({
+        month: '2026-03',
+        reason: 'Unlock request for reconciliation evidence update',
+      });
+
+    const rejectorToken = makeToken('SystemAdmin', 'tenant-root', 'sys-010');
+    const firstRejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${rejectorToken}`)
+      .send({
+        tenantId: 'tenant-aaa',
+        requestId: requestRes.body.data.requestId,
+        reason: 'Rejected because approval package is incomplete',
+      });
+
+    expect(firstRejectRes.status).toBe(200);
+    expect(firstRejectRes.body.success).toBe(true);
+
+    const secondRejectorToken = makeToken('SystemAdmin', 'tenant-root', 'sys-011');
+    const secondRejectRes = await request(app)
+      .post('/reports/close/monthly/unlock/reject')
+      .set('Authorization', `Bearer ${secondRejectorToken}`)
+      .send({
+        tenantId: 'tenant-aaa',
+        requestId: requestRes.body.data.requestId,
+        reason: 'Second rejection attempt should fail',
+      });
+
+    expect(secondRejectRes.status).toBe(409);
+    expect(secondRejectRes.body.success).toBe(false);
+    expect(secondRejectRes.body.error.code).toBe('CONFLICT');
   });
 });

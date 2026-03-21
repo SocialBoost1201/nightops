@@ -49,6 +49,7 @@ Audit action:
 APIs:
 - `POST /reports/close/monthly/unlock/request`
 - `POST /reports/close/monthly/unlock/approve`
+- `POST /reports/close/monthly/unlock/reject`
 
 Behavior:
 - Step 1 creates a pending unlock request.
@@ -58,6 +59,7 @@ Behavior:
 Audit actions:
 - `REQUEST_MONTHLY_UNLOCK`
 - `APPROVE_MONTHLY_UNLOCK`
+- `REJECT_MONTHLY_UNLOCK`
 
 ## 4. Unlock Request Data Model
 Table: `unlock_requests`
@@ -99,7 +101,15 @@ This prevents lock bypass by moving data across dates.
 - Tenant boundary is enforced.
 - Only `Admin` and `SystemAdmin` can request/approve unlock.
 
-### 6.3 Error codes used
+### 6.3 Unlock reject validation
+- `requestId` is required.
+- `reason` is required with minimum length 10.
+- Rejector must be different from requester.
+- Reject is blocked when request status is already `APPROVED` or `REJECTED`.
+- Tenant boundary is enforced.
+- Reject does not execute monthly unlock.
+
+### 6.4 Error codes used
 - `422` for validation failures (`reason`, `requestId`, format).
 - `409` for locked/conflict state or invalid workflow state.
 - `403` for tenant boundary violations.
