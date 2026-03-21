@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '../../prisma/generated/client';
 import { APIError, authenticate, checkTenantStatus, enforceTenantBoundary, requireRoles } from '../middleware';
 import { AppErrorCodes } from '../common/error-codes';
+import { writeAuditLogFromRequest } from '../common/audit/audit.service';
 import {
   getCurrentMonthDateRange,
   getTodayBusinessDateString,
@@ -18,6 +19,9 @@ const resolveTargetTenantId = (req: Request): string => {
   const user = (req as any).user;
   if (user.role === 'SystemAdmin' && req.query.tenantId) {
     return String(req.query.tenantId);
+  }
+  if (user.role === 'SystemAdmin' && req.body?.tenantId) {
+    return String(req.body.tenantId);
   }
   return user.tenantId;
 };
@@ -107,6 +111,109 @@ router.get(
         totalSubtotal,
         totalSales,
         avgPerSlip,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/close/daily',
+  authenticate,
+  checkTenantStatus,
+  reportRoles,
+  enforceTenantBoundary,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as any).user;
+      const tenantId = resolveTargetTenantId(req);
+      const { date, dateString } = resolveBusinessDate(req.body?.businessDate ?? req.query.businessDate);
+      const cashActual = Number(req.body?.cashActual);
+      if (!Number.isFinite(cashActual)) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'cashActual is required', 'cashActual');
+      }
+
+      const existingClose = await prisma.dailyClose.findUnique({
+        where: {
+          uq_daily_closes_tenant_date: {
+            tenantId,
+            businessDate: date,
+          },
+        },
+      });
+
+      if (existingClose?.status === 'closed') {
+        throw new APIError(409, AppErrorCodes.CONFLICT, 'This businessDate is already closed');
+      }
+
+      const slips = await prisma.salesSlip.findMany({
+        where: {
+          tenantId,
+          businessDate: date,
+        },
+      });
+      const totalSales = slips.reduce((sum, slip) => sum + slip.totalRounded, 0);
+      const cashExpected = totalSales;
+      const difference = Math.round(cashActual - cashExpected);
+      const hasDifference = difference !== 0;
+
+      const close = await prisma.$transaction(async (tx) => {
+        const closed = await tx.dailyClose.upsert({
+          where: {
+            uq_daily_closes_tenant_date: {
+              tenantId,
+              businessDate: date,
+            },
+          },
+          update: {
+            status: 'closed',
+            closedBy: String(user.id),
+            closedAt: new Date(),
+          },
+          create: {
+            tenantId,
+            businessDate: date,
+            status: 'closed',
+            closedBy: String(user.id),
+            closedAt: new Date(),
+          },
+        });
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: 'DAILY_CLOSE',
+          resourceType: 'DailyClose',
+          resourceId: closed.id,
+          tenantId,
+          before: {
+            businessDate: dateString,
+            status: existingClose?.status ?? 'open',
+          },
+          after: {
+            businessDate: dateString,
+            totalSales,
+            cashExpected,
+            cashActual,
+            difference,
+            status: 'closed',
+            warning: hasDifference ? 'CASH_DIFFERENCE_DETECTED' : null,
+          },
+          reason: req.body?.reason ?? null,
+          requireReason: true,
+        }, 'strict');
+
+        return closed;
+      });
+
+      res.json({
+        closeId: close.id,
+        businessDate: dateString,
+        status: close.status,
+        totalSales,
+        cashExpected,
+        cashActual,
+        difference,
+        warning: hasDifference ? 'CASH_DIFFERENCE_DETECTED' : null,
       });
     } catch (error) {
       next(error);

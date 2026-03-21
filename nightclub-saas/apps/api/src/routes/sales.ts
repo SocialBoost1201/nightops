@@ -66,6 +66,22 @@ const extractSlipSnapshot = (slip: {
   };
 };
 
+const assertNotDailyClosed = async (tx: Pick<PrismaClient, 'dailyClose'>, tenantId: string, businessDate: Date): Promise<void> => {
+  const close = await tx.dailyClose.findUnique({
+    where: {
+      uq_daily_closes_tenant_date: {
+        tenantId,
+        businessDate,
+      },
+    },
+    select: { status: true },
+  });
+
+  if (close?.status === 'closed') {
+    throw new APIError(409, AppErrorCodes.CONFLICT, 'Daily close has already been completed for this businessDate');
+  }
+};
+
 router.patch(
   '/:id',
   authenticate,
@@ -95,6 +111,8 @@ router.patch(
 
       const before = extractSlipSnapshot(existing);
       const updated = await prisma.$transaction(async (tx) => {
+        await assertNotDailyClosed(tx, existing.tenantId, existing.businessDate);
+
         const changed = await tx.salesSlip.update({
           where: { id },
           data: updateData,
@@ -166,6 +184,8 @@ router.post(
       const beforeSlip = extractSlipSnapshot(targetSlip);
 
       const result = await prisma.$transaction(async (tx) => {
+        await assertNotDailyClosed(tx, targetSlip.tenantId, targetSlip.businessDate);
+
         const updatedSlip = await tx.salesSlip.update({
           where: { id: targetSlip.id },
           data: updateData,
