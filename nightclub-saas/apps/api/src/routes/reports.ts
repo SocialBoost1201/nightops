@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
 import { PrismaClient } from '../../prisma/generated/client';
 import { APIError, authenticate, checkTenantStatus, enforceTenantBoundary, requireRoles } from '../middleware';
 import { AppErrorCodes } from '../common/error-codes';
@@ -100,6 +101,93 @@ const resolveMonthRange = (monthValue: unknown): { month: string; fromDate: Date
   const fromDate = new Date(Date.UTC(year, monthNumber - 1, 1));
   const toDate = new Date(Date.UTC(year, monthNumber, 0));
   return { month, fromDate, toDate };
+};
+
+const MONTHLY_UNLOCK_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+} as const;
+
+type MonthlyUnlockRequestRow = {
+  id: string;
+  tenantId: string;
+  month: string;
+  requesterId: string;
+  approverId: string | null;
+  rejectorId: string | null;
+  reason: string;
+  status: string;
+  createdAt: Date;
+  approvedAt: Date | null;
+  rejectedAt: Date | null;
+};
+
+const validateUnlockReason = (reasonValue: unknown): string => {
+  const reason = typeof reasonValue === 'string' ? reasonValue.trim() : '';
+  if (reason.length < 10) {
+    throw new APIError(
+      422,
+      AppErrorCodes.VALIDATION_INVALID_RANGE,
+      'reason must be at least 10 characters for monthly unlock request',
+      'reason',
+    );
+  }
+  return reason;
+};
+
+const findMonthlyUnlockRequestById = async (
+  tx: Pick<PrismaClient, '$queryRaw'>,
+  requestId: string,
+): Promise<MonthlyUnlockRequestRow | null> => {
+  const rows = await tx.$queryRaw<MonthlyUnlockRequestRow[]>`
+    SELECT
+      unlock_request_id AS "id",
+      tenant_id AS "tenantId",
+      month,
+      requester_id AS "requesterId",
+      approver_id AS "approverId",
+      rejector_id AS "rejectorId",
+      reason,
+      status,
+      created_at AS "createdAt",
+      approved_at AS "approvedAt",
+      rejected_at AS "rejectedAt"
+    FROM unlock_requests
+    WHERE unlock_request_id = ${requestId}::uuid
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
+};
+
+const findPendingMonthlyUnlockRequest = async (
+  tx: Pick<PrismaClient, '$queryRaw'>,
+  tenantId: string,
+  month: string,
+): Promise<MonthlyUnlockRequestRow | null> => {
+  const rows = await tx.$queryRaw<MonthlyUnlockRequestRow[]>`
+    SELECT
+      unlock_request_id AS "id",
+      tenant_id AS "tenantId",
+      month,
+      requester_id AS "requesterId",
+      approver_id AS "approverId",
+      rejector_id AS "rejectorId",
+      reason,
+      status,
+      created_at AS "createdAt",
+      approved_at AS "approvedAt",
+      rejected_at AS "rejectedAt"
+    FROM unlock_requests
+    WHERE tenant_id = ${tenantId}
+      AND month = ${month}
+      AND status = ${MONTHLY_UNLOCK_STATUS.PENDING}
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
 };
 
 /**
@@ -338,15 +426,17 @@ router.post(
 );
 
 router.post(
-  '/close/monthly/unlock',
+  '/close/monthly/unlock/request',
   authenticate,
   checkTenantStatus,
   financeCloseRoles,
   enforceTenantBoundary,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const user = (req as any).user;
       const tenantId = resolveTargetTenantId(req);
       const { month } = resolveMonthRange(req.body?.month ?? req.query.month);
+      const reason = validateUnlockReason(req.body?.reason);
 
       const existingClose = await prisma.monthlyClose.findUnique({
         where: {
@@ -360,7 +450,140 @@ router.post(
         throw new APIError(409, AppErrorCodes.CONFLICT, 'This month is not in confirmed state');
       }
 
+      const unlockRequest = await prisma.$transaction(async (tx) => {
+        const pending = await findPendingMonthlyUnlockRequest(tx, tenantId, month);
+        if (pending) {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'An unlock request is already pending for this month');
+        }
+
+        const requestId = randomUUID();
+        const rows = await tx.$queryRaw<MonthlyUnlockRequestRow[]>`
+          INSERT INTO unlock_requests (
+            unlock_request_id,
+            tenant_id,
+            month,
+            requester_id,
+            reason,
+            status,
+            created_at,
+            approved_at,
+            rejector_id,
+            rejected_at
+          ) VALUES (
+            ${requestId}::uuid,
+            ${tenantId}::uuid,
+            ${month},
+            ${String(user.id)}::uuid,
+            ${reason},
+            ${MONTHLY_UNLOCK_STATUS.PENDING},
+            NOW(),
+            NULL,
+            NULL,
+            NULL
+          )
+          RETURNING
+            unlock_request_id AS "id",
+            tenant_id AS "tenantId",
+            month,
+            requester_id AS "requesterId",
+            approver_id AS "approverId",
+            rejector_id AS "rejectorId",
+            reason,
+            status,
+            created_at AS "createdAt",
+            approved_at AS "approvedAt",
+            rejected_at AS "rejectedAt"
+        `;
+        const created = rows[0];
+        if (!created) {
+          throw new APIError(500, AppErrorCodes.INTERNAL_SERVER_ERROR, 'Failed to create unlock request');
+        }
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: 'REQUEST_MONTHLY_UNLOCK',
+          resourceType: 'UnlockRequest',
+          resourceId: created.id,
+          tenantId,
+          before: {
+            month,
+            monthlyCloseStatus: existingClose.status,
+          },
+          after: {
+            requestId: created.id,
+            month,
+            status: created.status,
+            requesterId: created.requesterId,
+          },
+          reason,
+          requireReason: true,
+          auditMeta: {
+            approvalFlow: '4-eyes',
+            requestId: created.id,
+          },
+        }, 'strict');
+
+        return created;
+      });
+
+      res.json({
+        requestId: unlockRequest.id,
+        month: unlockRequest.month,
+        status: unlockRequest.status,
+        requesterId: unlockRequest.requesterId,
+        createdAt: unlockRequest.createdAt,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/close/monthly/unlock/approve',
+  authenticate,
+  checkTenantStatus,
+  financeCloseRoles,
+  enforceTenantBoundary,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as any).user;
+      const tenantId = resolveTargetTenantId(req);
+      const requestId = String(req.body?.requestId ?? '').trim();
+
+      if (!requestId) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'requestId is required', 'requestId');
+      }
+
       const unlocked = await prisma.$transaction(async (tx) => {
+        const unlockRequest = await findMonthlyUnlockRequestById(tx, requestId);
+        if (!unlockRequest) {
+          throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Unlock request not found');
+        }
+
+        if (unlockRequest.tenantId !== tenantId && user.role !== 'SystemAdmin') {
+          throw new APIError(403, AppErrorCodes.TENANT_MISMATCH, 'Tenant boundary violation');
+        }
+
+        if (unlockRequest.status !== MONTHLY_UNLOCK_STATUS.PENDING) {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'Unlock request is already resolved');
+        }
+
+        if (unlockRequest.requesterId === String(user.id)) {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'Requester cannot approve own unlock request');
+        }
+
+        const existingClose = await tx.monthlyClose.findUnique({
+          where: {
+            uq_monthly_closes_tenant_month: {
+              tenantId: unlockRequest.tenantId,
+              month: unlockRequest.month,
+            },
+          },
+        });
+        if (!existingClose || existingClose.status !== 'closed') {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'This month is not in confirmed state');
+        }
+
         const close = await tx.monthlyClose.update({
           where: { id: existingClose.id },
           data: {
@@ -370,32 +593,178 @@ router.post(
           },
         });
 
+        const rows = await tx.$queryRaw<MonthlyUnlockRequestRow[]>`
+          UPDATE unlock_requests
+          SET
+            status = ${MONTHLY_UNLOCK_STATUS.APPROVED},
+            approver_id = ${String(user.id)}::uuid,
+            approved_at = NOW(),
+            rejector_id = NULL,
+            rejected_at = NULL
+          WHERE unlock_request_id = ${unlockRequest.id}::uuid
+          RETURNING
+            unlock_request_id AS "id",
+            tenant_id AS "tenantId",
+            month,
+            requester_id AS "requesterId",
+            approver_id AS "approverId",
+            rejector_id AS "rejectorId",
+            reason,
+            status,
+            created_at AS "createdAt",
+            approved_at AS "approvedAt",
+            rejected_at AS "rejectedAt"
+        `;
+        const approvedRequest = rows[0];
+        if (!approvedRequest) {
+          throw new APIError(500, AppErrorCodes.INTERNAL_SERVER_ERROR, 'Failed to approve unlock request');
+        }
+
         await writeAuditLogFromRequest(tx, req, {
-          action: 'MONTHLY_UNLOCK',
+          action: 'APPROVE_MONTHLY_UNLOCK',
           resourceType: 'MonthlyClose',
           resourceId: close.id,
-          tenantId,
+          tenantId: unlockRequest.tenantId,
           before: {
-            month,
-            status: existingClose.status,
+            requestId: unlockRequest.id,
+            month: unlockRequest.month,
+            status: unlockRequest.status,
+            monthlyCloseStatus: existingClose.status,
           },
           after: {
-            month,
+            requestId: unlockRequest.id,
+            month: unlockRequest.month,
+            unlockRequestStatus: approvedRequest.status,
+            approverId: approvedRequest.approverId,
             status: close.status,
             confirmed: false,
+            approvalFlow: '4-eyes',
           },
-          reason: req.body?.reason ?? null,
+          reason: unlockRequest.reason,
           requireReason: true,
+          auditMeta: {
+            approvalFlow: '4-eyes',
+            requestId: unlockRequest.id,
+          },
         }, 'strict');
 
-        return close;
+        return {
+          close,
+          unlockRequest: approvedRequest,
+        };
       });
 
       res.json({
-        closeId: unlocked.id,
-        month,
-        status: unlocked.status,
+        closeId: unlocked.close.id,
+        month: unlocked.close.month,
+        status: unlocked.close.status,
         confirmed: false,
+        requestId: unlocked.unlockRequest.id,
+        unlockRequestStatus: unlocked.unlockRequest.status,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/close/monthly/unlock/reject',
+  authenticate,
+  checkTenantStatus,
+  financeCloseRoles,
+  enforceTenantBoundary,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as any).user;
+      const tenantId = resolveTargetTenantId(req);
+      const requestId = String(req.body?.requestId ?? '').trim();
+      const reason = validateUnlockReason(req.body?.reason);
+
+      if (!requestId) {
+        throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'requestId is required', 'requestId');
+      }
+
+      const rejected = await prisma.$transaction(async (tx) => {
+        const unlockRequest = await findMonthlyUnlockRequestById(tx, requestId);
+        if (!unlockRequest) {
+          throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Unlock request not found');
+        }
+
+        if (unlockRequest.tenantId !== tenantId && user.role !== 'SystemAdmin') {
+          throw new APIError(403, AppErrorCodes.TENANT_MISMATCH, 'Tenant boundary violation');
+        }
+
+        if (unlockRequest.status !== MONTHLY_UNLOCK_STATUS.PENDING) {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'Unlock request is already resolved');
+        }
+
+        if (unlockRequest.requesterId === String(user.id)) {
+          throw new APIError(409, AppErrorCodes.CONFLICT, 'Requester cannot reject own unlock request');
+        }
+
+        const rows = await tx.$queryRaw<MonthlyUnlockRequestRow[]>`
+          UPDATE unlock_requests
+          SET
+            status = ${MONTHLY_UNLOCK_STATUS.REJECTED},
+            rejector_id = ${String(user.id)}::uuid,
+            rejected_at = NOW(),
+            approver_id = NULL,
+            approved_at = NULL
+          WHERE unlock_request_id = ${unlockRequest.id}::uuid
+          RETURNING
+            unlock_request_id AS "id",
+            tenant_id AS "tenantId",
+            month,
+            requester_id AS "requesterId",
+            approver_id AS "approverId",
+            rejector_id AS "rejectorId",
+            reason,
+            status,
+            created_at AS "createdAt",
+            approved_at AS "approvedAt",
+            rejected_at AS "rejectedAt"
+        `;
+
+        const rejectedRequest = rows[0];
+        if (!rejectedRequest) {
+          throw new APIError(500, AppErrorCodes.INTERNAL_SERVER_ERROR, 'Failed to reject unlock request');
+        }
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: 'REJECT_MONTHLY_UNLOCK',
+          resourceType: 'UnlockRequest',
+          resourceId: rejectedRequest.id,
+          tenantId: unlockRequest.tenantId,
+          before: {
+            requestId: unlockRequest.id,
+            month: unlockRequest.month,
+            status: unlockRequest.status,
+          },
+          after: {
+            requestId: unlockRequest.id,
+            month: unlockRequest.month,
+            unlockRequestStatus: rejectedRequest.status,
+            rejectorId: rejectedRequest.rejectorId,
+            rejectedAt: rejectedRequest.rejectedAt,
+          },
+          reason,
+          requireReason: true,
+          auditMeta: {
+            approvalFlow: '4-eyes',
+            requestId: unlockRequest.id,
+          },
+        }, 'strict');
+
+        return rejectedRequest;
+      });
+
+      res.json({
+        requestId: rejected.id,
+        month: rejected.month,
+        unlockRequestStatus: rejected.status,
+        rejectorId: rejected.rejectorId,
+        rejectedAt: rejected.rejectedAt,
       });
     } catch (error) {
       next(error);
