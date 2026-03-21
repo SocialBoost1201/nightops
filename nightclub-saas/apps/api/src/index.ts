@@ -348,6 +348,12 @@ import attendanceRouter from './routes/attendance';
 app.use('/attendance', attendanceRouter);
 
 // =======================
+// 売上ルーター
+// =======================
+import salesRouter from './routes/sales';
+app.use('/sales', salesRouter);
+
+// =======================
 // レポートルーター
 // =======================
 import reportsRouter from './routes/reports';
