@@ -4,10 +4,15 @@ import { useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { ClipboardList, Filter, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/ui/Toast';
+import { ApprovalActionDialog } from '@/components/approvals/ApprovalActionDialog';
 import {
+  approveUnlockRequest,
+  extractApiErrorMessage,
   fetchPendingApprovals,
   formatApprovalType,
   formatDateTime,
+  rejectUnlockRequest,
   type ApprovalType,
   type PendingApprovalsQuery,
   type PendingApprovalItem,
@@ -18,6 +23,7 @@ const LIMIT_OPTIONS = [20, 50, 100] as const;
 
 export default function PendingApprovalsPage() {
   const { user } = useAuth();
+  const { success, error: showError } = useToast();
   const isSystemAdmin = user?.role === 'SystemAdmin';
   const [type, setType] = useState<ApprovalType>('MONTHLY_UNLOCK');
   const [from, setFrom] = useState('');
@@ -25,6 +31,11 @@ export default function PendingApprovalsPage() {
   const [tenantId, setTenantId] = useState('');
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [dialogState, setDialogState] = useState<{
+    mode: 'approve' | 'reject';
+    item: PendingApprovalItem;
+  } | null>(null);
 
   const query = useMemo<PendingApprovalsQuery>(() => ({
     type,
@@ -49,6 +60,32 @@ export default function PendingApprovalsPage() {
   const onFilterChange = <T,>(setter: (value: T) => void, value: T) => {
     setter(value);
     setPage(1);
+  };
+
+  const handleActionConfirm = async () => {
+    if (!dialogState) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      if (dialogState.mode === 'approve') {
+        await approveUnlockRequest({ requestId: dialogState.item.id });
+        success('アンロック申請を承認しました。');
+      } else {
+        await rejectUnlockRequest({
+          requestId: dialogState.item.id,
+          reason: dialogState.item.reason || 'Rejected by management UI',
+        });
+        success('アンロック申請を却下しました。');
+      }
+      setDialogState(null);
+      await mutate();
+    } catch (actionError) {
+      showError(extractApiErrorMessage(actionError, '申請の処理に失敗しました。'));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -198,20 +235,28 @@ export default function PendingApprovalsPage() {
                     <td className="px-6 py-4 text-gray-400">{formatDateTime(item.createdAt)}</td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          disabled
-                          className="px-3 py-1.5 rounded border border-gray-700 text-gray-500 text-xs cursor-not-allowed"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          disabled
-                          className="px-3 py-1.5 rounded border border-gray-700 text-gray-500 text-xs cursor-not-allowed"
-                        >
-                          Reject
-                        </button>
+                        {item.requesterId === user?.accountId ? (
+                          <span className="text-[11px] text-amber-500 bg-amber-900/20 border border-amber-700/40 rounded px-2 py-1">
+                            自分の申請は処理不可
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setDialogState({ mode: 'approve', item })}
+                              className="px-3 py-1.5 rounded border border-emerald-700/60 bg-emerald-900/20 text-emerald-300 text-xs hover:bg-emerald-900/30 transition-colors"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDialogState({ mode: 'reject', item })}
+                              className="px-3 py-1.5 rounded border border-red-700/60 bg-red-900/20 text-red-300 text-xs hover:bg-red-900/30 transition-colors"
+                            >
+                              Reject
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -248,6 +293,18 @@ export default function PendingApprovalsPage() {
           </div>
         </div>
       </div>
+
+      <ApprovalActionDialog
+        mode={dialogState?.mode ?? 'approve'}
+        item={dialogState?.item ?? null}
+        isSubmitting={isSubmitting}
+        onClose={() => {
+          if (!isSubmitting) {
+            setDialogState(null);
+          }
+        }}
+        onConfirm={handleActionConfirm}
+      />
     </div>
   );
 }

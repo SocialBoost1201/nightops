@@ -63,6 +63,15 @@ export interface UnlockRequestsQuery {
   limit?: number;
 }
 
+export interface ApproveUnlockRequestPayload {
+  requestId: string;
+}
+
+export interface RejectUnlockRequestPayload {
+  requestId: string;
+  reason: string;
+}
+
 export interface WorkflowListResponse<T> {
   items: T[];
   pagination: PaginationInfo;
@@ -131,6 +140,14 @@ export async function fetchUnlockRequests(query: UnlockRequestsQuery): Promise<W
   });
   const response = await apiClient.get('/admin/unlock-requests', { params });
   return unwrapListResponse<UnlockRequestItem>(response.data);
+}
+
+export async function approveUnlockRequest(payload: ApproveUnlockRequestPayload): Promise<void> {
+  await apiClient.post('/reports/close/monthly/unlock/approve', payload);
+}
+
+export async function rejectUnlockRequest(payload: RejectUnlockRequestPayload): Promise<void> {
+  await apiClient.post('/reports/close/monthly/unlock/reject', payload);
 }
 
 export function formatApprovalType(value: ApprovalType): string {
