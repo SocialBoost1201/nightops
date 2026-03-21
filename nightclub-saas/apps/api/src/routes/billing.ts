@@ -2,6 +2,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import Stripe from 'stripe';
 import { PrismaClient } from '../../prisma/generated/client';
 import { authenticate, APIError } from '../middleware';
+import { AppErrorCodes } from '../common/error-codes';
+import { writeAuditLogFromRequest } from '../common/audit/audit.service';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -26,7 +28,7 @@ router.post('/create-checkout-session', authenticate, async (req: Request, res: 
     });
 
     if (!tenant) {
-      throw new APIError(404, 'VALID_001', 'Tenant not found');
+      throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Tenant not found');
     }
 
     const plan = await prisma.plan.findUnique({
@@ -34,7 +36,7 @@ router.post('/create-checkout-session', authenticate, async (req: Request, res: 
     });
 
     if (!plan) {
-      throw new APIError(404, 'VALID_001', 'Plan not found');
+      throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Plan not found');
     }
 
     // すでにStripe Customerがあるか確認し、なければ作成
@@ -144,20 +146,20 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     // 処理開始
     switch (event.type) {
       case 'invoice.payment_succeeded':
-        await handlePaymentSucceeded(event.data.object as Stripe.Invoice);
+        await handlePaymentSucceeded(event.data.object as Stripe.Invoice, req);
         break;
       case 'invoice.payment_failed':
-        await handlePaymentFailed(event.data.object as Stripe.Invoice);
+        await handlePaymentFailed(event.data.object as Stripe.Invoice, req);
         break;
       case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
+        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription, req);
         break;
       case 'customer.subscription.deleted':
-        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+        await handleSubscriptionDeleted(event.data.object as Stripe.Subscription, req);
         break;
       case 'checkout.session.completed':
         // サブスクリプション作成時の初回処理など
-        await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
+        await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session, req);
         break;
       default:
         console.log(`Unhandled event type ${event.type}`);
@@ -180,39 +182,66 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
-async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
+async function handleCheckoutCompleted(session: Stripe.Checkout.Session, req: Request) {
   if (session.mode !== 'subscription') return;
   const tenantId = session.metadata?.tenantId;
   const planId = session.metadata?.planId;
   const subscriptionId = (session as any).subscription as string;
 
   if (tenantId && planId) {
-    // Subscriptionレコードを作成
-    await prisma.subscription.upsert({
-      where: { tenantId },
-      update: {
-        stripeSubscriptionId: subscriptionId,
-        status: 'active',
-      },
-      create: {
+    await prisma.$transaction(async (tx) => {
+      const beforeSub = await tx.subscription.findUnique({
+        where: { tenantId },
+      });
+      const beforeTenant = await tx.tenant.findUnique({
+        where: { id: tenantId },
+      });
+
+      const sub = await tx.subscription.upsert({
+        where: { tenantId },
+        update: {
+          stripeSubscriptionId: subscriptionId,
+          status: 'active',
+        },
+        create: {
+          tenantId,
+          stripeSubscriptionId: subscriptionId,
+          status: 'active',
+        },
+      });
+
+      const tenant = await tx.tenant.update({
+        where: { id: tenantId },
+        data: {
+          status: 'active',
+          planId,
+        },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'SYNC_SUBSCRIPTION_FROM_CHECKOUT',
+        resourceType: 'Subscription',
+        resourceId: sub.id,
         tenantId,
-        stripeSubscriptionId: subscriptionId,
-        status: 'active',
-      },
-    });
+        before: beforeSub ? { status: beforeSub.status, stripeSubscriptionId: beforeSub.stripeSubscriptionId } : null,
+        after: { status: sub.status, stripeSubscriptionId: sub.stripeSubscriptionId },
+        source: 'stripe_webhook',
+      }, 'strict');
 
-    // Tenant状態を active に更新
-    await prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
-        status: 'active',
-        planId,
-      },
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_FROM_BILLING',
+        resourceType: 'Tenant',
+        resourceId: tenant.id,
+        tenantId,
+        before: beforeTenant ? { status: beforeTenant.status, planId: beforeTenant.planId } : null,
+        after: { status: tenant.status, planId: tenant.planId },
+        source: 'stripe_webhook',
+      }, 'strict');
     });
   }
 }
 
-async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
+async function handlePaymentSucceeded(invoice: Stripe.Invoice, req: Request) {
   const stripeSubscriptionId = (invoice as any).subscription as string;
   if (!stripeSubscriptionId) return;
 
@@ -221,28 +250,53 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
   });
 
   if (sub) {
-    await prisma.billingHistory.create({
-      data: {
+    await prisma.$transaction(async (tx) => {
+      const beforeSub = await tx.subscription.findUnique({ where: { id: sub.id } });
+      const beforeTenant = await tx.tenant.findUnique({ where: { id: sub.tenantId } });
+
+      await tx.billingHistory.create({
+        data: {
+          tenantId: sub.tenantId,
+          amount: invoice.amount_paid,
+          status: 'succeeded',
+          paidAt: new Date(),
+        },
+      });
+
+      const updatedSub = await tx.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'active' },
+      });
+
+      const updatedTenant = await tx.tenant.update({
+        where: { id: sub.tenantId },
+        data: { status: 'active' },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_SUBSCRIPTION_STATUS',
+        resourceType: 'Subscription',
+        resourceId: updatedSub.id,
         tenantId: sub.tenantId,
-        amount: invoice.amount_paid,
-        status: 'succeeded',
-        paidAt: new Date(),
-      },
-    });
+        before: beforeSub ? { status: beforeSub.status } : null,
+        after: { status: updatedSub.status },
+        source: 'stripe_webhook',
+      }, 'strict');
 
-    await prisma.subscription.update({
-      where: { id: sub.id },
-      data: { status: 'active' },
-    });
-
-    await prisma.tenant.update({
-      where: { id: sub.tenantId },
-      data: { status: 'active' },
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_FROM_BILLING',
+        resourceType: 'Tenant',
+        resourceId: updatedTenant.id,
+        tenantId: sub.tenantId,
+        before: beforeTenant ? { status: beforeTenant.status } : null,
+        after: { status: updatedTenant.status },
+        source: 'stripe_webhook',
+      }, 'strict');
     });
   }
 }
 
-async function handlePaymentFailed(invoice: Stripe.Invoice) {
+async function handlePaymentFailed(invoice: Stripe.Invoice, req: Request) {
   const stripeSubscriptionId = (invoice as any).subscription as string;
   if (!stripeSubscriptionId) return;
 
@@ -251,29 +305,53 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
   });
 
   if (sub) {
-    await prisma.billingHistory.create({
-      data: {
+    await prisma.$transaction(async (tx) => {
+      const beforeSub = await tx.subscription.findUnique({ where: { id: sub.id } });
+      const beforeTenant = await tx.tenant.findUnique({ where: { id: sub.tenantId } });
+
+      await tx.billingHistory.create({
+        data: {
+          tenantId: sub.tenantId,
+          amount: invoice.amount_due,
+          status: 'failed',
+          paidAt: new Date(),
+        },
+      });
+
+      const updatedSub = await tx.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'past_due' },
+      });
+
+      const updatedTenant = await tx.tenant.update({
+        where: { id: sub.tenantId },
+        data: { status: 'past_due' },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_SUBSCRIPTION_STATUS',
+        resourceType: 'Subscription',
+        resourceId: updatedSub.id,
         tenantId: sub.tenantId,
-        amount: invoice.amount_due,
-        status: 'failed',
-        paidAt: new Date(),
-      },
-    });
+        before: beforeSub ? { status: beforeSub.status } : null,
+        after: { status: updatedSub.status },
+        source: 'stripe_webhook',
+      }, 'strict');
 
-    // 猶予期間（past_due）へ移行
-    await prisma.subscription.update({
-      where: { id: sub.id },
-      data: { status: 'past_due' },
-    });
-
-    await prisma.tenant.update({
-      where: { id: sub.tenantId },
-      data: { status: 'past_due' },
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_FROM_BILLING',
+        resourceType: 'Tenant',
+        resourceId: updatedTenant.id,
+        tenantId: sub.tenantId,
+        before: beforeTenant ? { status: beforeTenant.status } : null,
+        after: { status: updatedTenant.status },
+        source: 'stripe_webhook',
+      }, 'strict');
     });
   }
 }
 
-async function handleSubscriptionUpdated(stripeSub: Stripe.Subscription) {
+async function handleSubscriptionUpdated(stripeSub: Stripe.Subscription, req: Request) {
   const stripeSubscriptionId = stripeSub.id;
   const sub = await prisma.subscription.findUnique({
     where: { stripeSubscriptionId },
@@ -286,59 +364,109 @@ async function handleSubscriptionUpdated(stripeSub: Stripe.Subscription) {
       return;
     }
 
-    await prisma.subscription.update({
-      where: { id: sub.id },
-      data: {
-        status: stripeSub.status,
-        currentPeriodStart: new Date((stripeSub as any).current_period_start * 1000),
-        currentPeriodEnd: new Date((stripeSub as any).current_period_end * 1000),
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      const beforeSub = await tx.subscription.findUnique({ where: { id: sub.id } });
+      const beforeTenant = await tx.tenant.findUnique({ where: { id: sub.tenantId } });
 
-    // テナント状態の同期 (Stripe -> SaaS Application Status)
-    let newTenantStatus = 'active'; // fallback
-    switch (stripeSub.status) {
-      case 'active':
-      case 'trialing':
-        newTenantStatus = 'active';
-        break;
-      case 'past_due':
-      case 'unpaid':
-        newTenantStatus = 'past_due';
-        break;
-      case 'canceled':
-      case 'incomplete_expired':
-        newTenantStatus = 'canceled';
-        break;
-      case 'paused':
-        newTenantStatus = 'suspended';
-        break;
-      default:
-        newTenantStatus = 'active'; // 'incomplete' などは一旦active扱い（Checkout完了前はtrialのまま等）
-    }
+      const updatedSub = await tx.subscription.update({
+        where: { id: sub.id },
+        data: {
+          status: stripeSub.status,
+          currentPeriodStart: new Date((stripeSub as any).current_period_start * 1000),
+          currentPeriodEnd: new Date((stripeSub as any).current_period_end * 1000),
+        },
+      });
 
-    await prisma.tenant.update({
-      where: { id: sub.tenantId },
-      data: { status: newTenantStatus },
+      // テナント状態の同期 (Stripe -> SaaS Application Status)
+      let newTenantStatus = 'active'; // fallback
+      switch (stripeSub.status) {
+        case 'active':
+        case 'trialing':
+          newTenantStatus = 'active';
+          break;
+        case 'past_due':
+        case 'unpaid':
+          newTenantStatus = 'past_due';
+          break;
+        case 'canceled':
+        case 'incomplete_expired':
+          newTenantStatus = 'canceled';
+          break;
+        case 'paused':
+          newTenantStatus = 'suspended';
+          break;
+        default:
+          newTenantStatus = 'active'; // 'incomplete' などは一旦active扱い（Checkout完了前はtrialのまま等）
+      }
+
+      const updatedTenant = await tx.tenant.update({
+        where: { id: sub.tenantId },
+        data: { status: newTenantStatus },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_SUBSCRIPTION_STATUS',
+        resourceType: 'Subscription',
+        resourceId: updatedSub.id,
+        tenantId: sub.tenantId,
+        before: beforeSub ? { status: beforeSub.status } : null,
+        after: { status: updatedSub.status },
+        source: 'stripe_webhook',
+      }, 'strict');
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_FROM_BILLING',
+        resourceType: 'Tenant',
+        resourceId: updatedTenant.id,
+        tenantId: sub.tenantId,
+        before: beforeTenant ? { status: beforeTenant.status } : null,
+        after: { status: updatedTenant.status },
+        source: 'stripe_webhook',
+      }, 'strict');
     });
   }
 }
 
-async function handleSubscriptionDeleted(stripeSub: Stripe.Subscription) {
+async function handleSubscriptionDeleted(stripeSub: Stripe.Subscription, req: Request) {
   const stripeSubscriptionId = stripeSub.id;
   const sub = await prisma.subscription.findUnique({
     where: { stripeSubscriptionId },
   });
 
   if (sub) {
-    await prisma.subscription.update({
-      where: { id: sub.id },
-      data: { status: 'canceled' },
-    });
+    await prisma.$transaction(async (tx) => {
+      const beforeSub = await tx.subscription.findUnique({ where: { id: sub.id } });
+      const beforeTenant = await tx.tenant.findUnique({ where: { id: sub.tenantId } });
 
-    await prisma.tenant.update({
-      where: { id: sub.tenantId },
-      data: { status: 'canceled' },
+      const updatedSub = await tx.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'canceled' },
+      });
+
+      const updatedTenant = await tx.tenant.update({
+        where: { id: sub.tenantId },
+        data: { status: 'canceled' },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_SUBSCRIPTION_STATUS',
+        resourceType: 'Subscription',
+        resourceId: updatedSub.id,
+        tenantId: sub.tenantId,
+        before: beforeSub ? { status: beforeSub.status } : null,
+        after: { status: updatedSub.status },
+        source: 'stripe_webhook',
+      }, 'strict');
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_FROM_BILLING',
+        resourceType: 'Tenant',
+        resourceId: updatedTenant.id,
+        tenantId: sub.tenantId,
+        before: beforeTenant ? { status: beforeTenant.status } : null,
+        after: { status: updatedTenant.status },
+        source: 'stripe_webhook',
+      }, 'strict');
     });
   }
 }
@@ -360,7 +488,7 @@ router.get('/overview', authenticate, async (req: Request, res: Response, next: 
       },
     });
 
-    if (!tenant) throw new APIError(404, 'TENANT_002', 'Tenant not found');
+    if (!tenant) throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Tenant not found');
 
     const latestHistory = await prisma.billingHistory.findFirst({
       where: { tenantId },

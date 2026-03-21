@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '../../prisma/generated/client';
 import { authenticate, APIError, requireRoles } from '../middleware';
+import { AppErrorCodes } from '../common/error-codes';
+import { writeAuditLogFromRequest } from '../common/audit/audit.service';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -33,7 +35,7 @@ router.post('/tenants', authenticate, systemAdminOnly, async (req: Request, res:
   try {
     const { name, planId } = req.body;
     if (!name) {
-      throw new APIError(400, 'VALID_001', 'name is required');
+      throw new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'name is required');
     }
 
     const tenant = await prisma.tenant.create({
@@ -43,6 +45,17 @@ router.post('/tenants', authenticate, systemAdminOnly, async (req: Request, res:
         status: 'trial', // 初期状態はトライアル
       },
     });
+
+    await writeAuditLogFromRequest(prisma, req, {
+      action: 'CREATE_TENANT',
+      resourceType: 'Tenant',
+      resourceId: tenant.id,
+      tenantId: tenant.id,
+      before: null,
+      after: { name: tenant.name, status: tenant.status, planId: tenant.planId },
+      source: 'system',
+    }, 'best_effort');
+
     res.status(201).json(tenant);
   } catch (error) {
     next(error);
@@ -56,20 +69,41 @@ router.post('/tenants', authenticate, systemAdminOnly, async (req: Request, res:
 router.patch('/tenants/:id', authenticate, systemAdminOnly, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { status, planId } = req.body;
+    const { status, planId, reason } = req.body;
     
     // 存在チェック
     const existing = await prisma.tenant.findUnique({ where: { id } });
     if (!existing) {
-      throw new APIError(404, 'TENANT_002', 'Tenant not found');
+      throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Tenant not found');
     }
 
-    const tenant = await prisma.tenant.update({
-      where: { id },
-      data: {
-        ...(status && { status }),
-        ...(planId && { planId }),
-      },
+    const beforeData = {
+      status: existing.status,
+      planId: existing.planId,
+    };
+
+    const tenant = await prisma.$transaction(async (tx) => {
+      const updated = await tx.tenant.update({
+        where: { id },
+        data: {
+          ...(status && { status }),
+          ...(planId && { planId }),
+        },
+      });
+
+      await writeAuditLogFromRequest(tx, req, {
+        action: 'UPDATE_TENANT_STATUS_OR_PLAN',
+        resourceType: 'Tenant',
+        resourceId: updated.id,
+        tenantId: updated.id,
+        before: beforeData,
+        after: { status: updated.status, planId: updated.planId },
+        reason: reason ?? null,
+        requireReason: true,
+        source: 'system',
+      }, 'strict');
+
+      return updated;
     });
     res.json(tenant);
   } catch (error) {
@@ -113,7 +147,7 @@ router.get('/tenants/:id', authenticate, systemAdminOnly, async (req: Request, r
     });
 
     if (!tenant) {
-      throw new APIError(404, 'TENANT_002', 'Tenant not found');
+      throw new APIError(404, AppErrorCodes.NOT_FOUND, 'Tenant not found');
     }
 
     // Webhook履歴 (全体から直近5件。本来はtenantIdで絞るのが望ましいがMVPとして直近履歴を表示)

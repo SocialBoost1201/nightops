@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '../../prisma/generated/client';
 import { APIError, authenticate, requireRoles, enforceTenantBoundary } from '../middleware';
+import { AppErrorCodes } from '../common/error-codes';
+import { writeAuditLogFromRequest } from '../common/audit/audit.service';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -30,11 +32,11 @@ router.post(
         (user.role === 'Cast' || user.role === 'Staff') &&
         targetAccountId !== user.id
       ) {
-        return next(new APIError(403, 'ACCESS_002', 'Cannot register shift for another account'));
+        return next(new APIError(403, AppErrorCodes.ACCESS_DENIED, 'Cannot register shift for another account'));
       }
 
       if (!targetDate) {
-        return next(new APIError(400, 'VALID_001', 'targetDate is required'));
+        return next(new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'targetDate is required'));
       }
 
       const shift = await prisma.shiftEntry.create({
@@ -116,42 +118,88 @@ router.put(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as any).user;
-      const { shiftIds, status, managerNote } = req.body;
+      const { shiftIds, status, managerNote, reason } = req.body;
 
       if (!shiftIds || !Array.isArray(shiftIds) || shiftIds.length === 0) {
-        return next(new APIError(400, 'VALID_001', 'shiftIds must be a non-empty array'));
+        return next(new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'shiftIds must be a non-empty array'));
       }
 
       const allowedStatuses = ['approved', 'rejected'];
       if (!allowedStatuses.includes(status)) {
         return next(
-          new APIError(400, 'VALID_003', `status must be one of: ${allowedStatuses.join(', ')}`)
+          new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, `status must be one of: ${allowedStatuses.join(', ')}`)
         );
       }
 
       // テナント所有確認
       const existingShifts = await prisma.shiftEntry.findMany({
         where: { id: { in: shiftIds } },
-        select: { id: true, tenantId: true },
+        select: {
+          id: true,
+          tenantId: true,
+          accountId: true,
+          targetDate: true,
+          status: true,
+          managerNote: true,
+          updatedAt: true,
+        },
       });
+
+      const tenantSet = new Set(existingShifts.map((shift) => shift.tenantId));
+      if (tenantSet.size > 1) {
+        return next(new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'shiftIds must belong to a single tenant'));
+      }
 
       const foreignIds = existingShifts
         .filter((s) => s.tenantId !== user.tenantId && user.role !== 'SystemAdmin')
         .map((s) => s.id);
 
       if (foreignIds.length > 0) {
-        return next(new APIError(403, 'TENANT_001', 'Tenant boundary violation'));
+        return next(new APIError(403, AppErrorCodes.TENANT_MISMATCH, 'Tenant boundary violation'));
       }
 
-      const updated = await prisma.shiftEntry.updateMany({
-        where: {
-          id: { in: shiftIds },
-          ...(user.role !== 'SystemAdmin' ? { tenantId: user.tenantId } : {}),
-        },
-        data: {
+      const beforeSnapshots = existingShifts.map((shift) => ({
+        id: shift.id,
+        accountId: shift.accountId,
+        targetDate: shift.targetDate,
+        status: shift.status,
+        managerNote: shift.managerNote,
+        updatedAt: shift.updatedAt,
+      }));
+
+      const updated = await prisma.$transaction(async (tx) => {
+        const changed = await tx.shiftEntry.updateMany({
+          where: {
+            id: { in: shiftIds },
+            ...(user.role !== 'SystemAdmin' ? { tenantId: user.tenantId } : {}),
+          },
+          data: {
+            status,
+            ...(managerNote ? { managerNote } : {}),
+          },
+        });
+
+        const afterSnapshots = beforeSnapshots.map((shift) => ({
+          ...shift,
           status,
-          ...(managerNote ? { managerNote } : {}),
-        },
+          managerNote: managerNote ?? shift.managerNote,
+        }));
+
+        await writeAuditLogFromRequest(tx, req, {
+          action: status === 'approved' ? 'APPROVE_SHIFT_CHANGE' : 'REJECT_SHIFT_CHANGE',
+          resourceType: 'ShiftEntry',
+          resourceId: shiftIds.length === 1 ? String(shiftIds[0]) : 'bulk',
+          tenantId: existingShifts[0]?.tenantId ?? user.tenantId,
+          before: beforeSnapshots,
+          after: {
+            updatedCount: changed.count,
+            shifts: afterSnapshots,
+          },
+          reason: reason ?? null,
+          requireReason: true,
+        }, 'strict');
+
+        return changed;
       });
 
       res.json({ updated: updated.count });

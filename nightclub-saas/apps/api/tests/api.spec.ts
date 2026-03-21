@@ -8,19 +8,25 @@ describe('API Foundation (M1)', () => {
     it('1. GET /health checks basic routing', async () => {
         const res = await request(app).get('/health');
         expect(res.status).toBe(200);
-        expect(res.body.status).toBe('ok');
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.status).toBe('ok');
+        expect(res.body.meta.correlationId).toBeDefined();
     });
 
     it('2. POST /auth/login fails without credentials', async () => {
         const res = await request(app).post('/auth/login').send({});
         expect(res.status).toBe(400);
-        expect(res.body.error).toBe('VALID_001'); // Error code uniformity check
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('VALIDATION_INVALID_RANGE');
+        expect(res.body.error.correlationId).toBeDefined();
     });
 
     it('3. GET /me fails without Token', async () => {
         const res = await request(app).get('/me');
         expect(res.status).toBe(401);
-        expect(res.body.error).toBe('AUTH_003');
+        expect(res.body.success).toBe(false);
+        expect(res.body.error.code).toBe('AUTH_TOKEN_EXPIRED');
+        expect(res.body.error.correlationId).toBeDefined();
     });
 
     it('4. POST /admin/accounts requires Admin role', async () => {

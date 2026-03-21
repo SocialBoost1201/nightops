@@ -1,6 +1,7 @@
 import {
     Injectable,
     Logger,
+    BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RequestUser } from '../../common';
@@ -8,14 +9,88 @@ import { RequestUser } from '../../common';
 @Injectable()
 export class ReportService {
     private readonly logger = new Logger(ReportService.name);
+    private readonly dateRegex = /^(\d{4})-(\d{2})-(\d{2})$/;
 
     constructor(private readonly prisma: PrismaService) {}
+
+    private formatDate(date: Date): string {
+        return date.toISOString().slice(0, 10);
+    }
+
+    private todayDateString(): string {
+        return this.formatDate(new Date());
+    }
+
+    private parseDateParam(paramName: string, value: string): Date {
+        const match = value.match(this.dateRegex);
+        if (!match) {
+            throw new BadRequestException({
+                error: {
+                    code: 'VALID_002',
+                    message: `${paramName} は YYYY-MM-DD 形式で入力してください`,
+                },
+            });
+        }
+
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const parsed = new Date(Date.UTC(year, month - 1, day));
+
+        if (
+            parsed.getUTCFullYear() !== year ||
+            parsed.getUTCMonth() !== month - 1 ||
+            parsed.getUTCDate() !== day
+        ) {
+            throw new BadRequestException({
+                error: {
+                    code: 'VALID_002',
+                    message: `${paramName} は存在する日付で指定してください`,
+                },
+            });
+        }
+
+        return new Date(`${value}T00:00:00.000Z`);
+    }
+
+    private getCurrentMonthRange(): { from: string; to: string } {
+        const now = new Date();
+        const year = now.getUTCFullYear();
+        const month = now.getUTCMonth() + 1;
+        const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+        const pad = (n: number) => String(n).padStart(2, '0');
+
+        return {
+            from: `${year}-${pad(month)}-01`,
+            to: `${year}-${pad(month)}-${pad(lastDay)}`,
+        };
+    }
+
+    private resolveDateRange(from?: string, to?: string) {
+        const defaults = this.getCurrentMonthRange();
+        const fromStr = from ?? defaults.from;
+        const toStr = to ?? defaults.to;
+        const fromDate = this.parseDateParam('from', fromStr);
+        const toDate = this.parseDateParam('to', toStr);
+
+        if (fromDate > toDate) {
+            throw new BadRequestException({
+                error: {
+                    code: 'VALID_002',
+                    message: 'from は to 以前の日付で指定してください',
+                },
+            });
+        }
+
+        return { fromStr, toStr, fromDate, toDate };
+    }
 
     /**
      * 日別売上集計
      */
-    async dailySummary(user: RequestUser, businessDate: string) {
-        const date = new Date(businessDate);
+    async dailySummary(user: RequestUser, businessDate?: string) {
+        const dateStr = businessDate ?? this.todayDateString();
+        const date = this.parseDateParam('businessDate', dateStr);
 
         const slips = await this.prisma.salesSlip.findMany({
             where: {
@@ -30,7 +105,7 @@ export class ReportService {
         const avgPerSlip = slipCount > 0 ? Math.round(totalSales / slipCount) : 0;
 
         return {
-            businessDate,
+            businessDate: dateStr,
             slipCount,
             totalSubtotal,
             totalSales,
@@ -41,13 +116,14 @@ export class ReportService {
     /**
      * キャスト別売上ランキング（期間指定）
      */
-    async castSalesRanking(user: RequestUser, from: string, to: string) {
+    async castSalesRanking(user: RequestUser, from?: string, to?: string) {
+        const { fromStr, toStr, fromDate, toDate } = this.resolveDateRange(from, to);
         const slips = await this.prisma.salesSlip.findMany({
             where: {
                 tenantId: user.tenantId,
                 businessDate: {
-                    gte: new Date(from),
-                    lte: new Date(to),
+                    gte: fromDate,
+                    lte: toDate,
                 },
             },
             include: {
@@ -86,20 +162,21 @@ export class ReportService {
             .sort((a, b) => b.totalSales - a.totalSales)
             .map((item, index) => ({ rank: index + 1, ...item }));
 
-        return { period: { from, to }, ranking };
+        return { period: { from: fromStr, to: toStr }, ranking };
     }
 
     /**
      * ドリンクランキング（期間指定）
      */
-    async drinkRanking(user: RequestUser, from: string, to: string) {
+    async drinkRanking(user: RequestUser, from?: string, to?: string) {
+        const { fromStr, toStr, fromDate, toDate } = this.resolveDateRange(from, to);
         const drinks = await this.prisma.drinkCount.findMany({
             where: {
                 tenantId: user.tenantId,
                 salesSlip: {
                     businessDate: {
-                        gte: new Date(from),
-                        lte: new Date(to),
+                        gte: fromDate,
+                        lte: toDate,
                     },
                 },
             },
@@ -136,19 +213,20 @@ export class ReportService {
             .sort((a, b) => b.totalCups - a.totalCups)
             .map((item, index) => ({ rank: index + 1, ...item }));
 
-        return { period: { from, to }, ranking };
+        return { period: { from: fromStr, to: toStr }, ranking };
     }
 
     /**
      * 指名ランキング（本指名回数）
      */
-    async nominationRanking(user: RequestUser, from: string, to: string) {
+    async nominationRanking(user: RequestUser, from?: string, to?: string) {
+        const { fromStr, toStr, fromDate, toDate } = this.resolveDateRange(from, to);
         const slips = await this.prisma.salesSlip.findMany({
             where: {
                 tenantId: user.tenantId,
                 businessDate: {
-                    gte: new Date(from),
-                    lte: new Date(to),
+                    gte: fromDate,
+                    lte: toDate,
                 },
             },
             include: {
@@ -184,6 +262,6 @@ export class ReportService {
             .sort((a, b) => b.nominationCount - a.nominationCount)
             .map((item, index) => ({ rank: index + 1, ...item }));
 
-        return { period: { from, to }, ranking };
+        return { period: { from: fromStr, to: toStr }, ranking };
     }
 }
