@@ -107,6 +107,8 @@ const MAX_WORKFLOW_LIST_LIMIT = 100;
 const DEFAULT_WORKFLOW_LIST_LIMIT = 20;
 const APPROVAL_TYPE_MONTHLY_UNLOCK = 'MONTHLY_UNLOCK';
 const ALLOWED_APPROVAL_TYPES = new Set([APPROVAL_TYPE_MONTHLY_UNLOCK]);
+const ALLOWED_UNLOCK_REQUEST_STATUSES = new Set(['PENDING', 'APPROVED', 'REJECTED']);
+const YEAR_MONTH_RE = /^(\d{4})-(\d{2})$/;
 
 type AuditSearchItem = {
     id: string;
@@ -153,6 +155,21 @@ type UnlockRequestRow = {
     rejectedAt: Date | null;
 };
 
+type UnlockRequestListItem = {
+    id: string;
+    tenantId: string;
+    month: string;
+    requesterId: string;
+    approverId: string | null;
+    rejectorId: string | null;
+    reason: string;
+    status: string;
+    createdAt: Date;
+    approvedAt: Date | null;
+    rejectedAt: Date | null;
+    correlationId: string | null;
+};
+
 const getOptionalString = (value: unknown): string | undefined => {
     if (typeof value !== 'string') {
         return undefined;
@@ -186,6 +203,15 @@ const parseDateFilter = (value: unknown, field: string): Date | undefined => {
 };
 
 const isValidAuditActionFilter = (value: string): boolean => /^[A-Z0-9_]+$/.test(value);
+const isValidYearMonth = (value: string): boolean => {
+    const match = value.match(YEAR_MONTH_RE);
+    if (!match) {
+        return false;
+    }
+    const month = Number(match[2]);
+    return month >= 1 && month <= 12;
+};
+
 const validateDateRange = (from: Date | undefined, to: Date | undefined): void => {
     if (from && to && from.getTime() > to.getTime()) {
         throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'from must be less than or equal to to', 'from');
@@ -713,6 +739,122 @@ app.get('/admin/approvals/pending', authenticate, checkTenantStatus, adminOnly, 
             summary: {
                 month: row.month,
             },
+        }));
+
+        res.json({
+            items,
+            pagination: {
+                page,
+                limit,
+                total,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// GET /admin/unlock-requests
+app.get('/admin/unlock-requests', authenticate, checkTenantStatus, adminOnly, enforceTenantBoundary, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const user = (req as any).user as { tenantId: string; role: string };
+        const status = getOptionalString(req.query.status);
+        const month = getOptionalString(req.query.month);
+        const requesterId = getOptionalString(req.query.requesterId);
+        const approverId = getOptionalString(req.query.approverId);
+        const from = parseDateFilter(req.query.from, 'from');
+        const to = parseDateFilter(req.query.to, 'to');
+        validateDateRange(from, to);
+
+        if (status && !ALLOWED_UNLOCK_REQUEST_STATUSES.has(status)) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'status must be one of PENDING, APPROVED, REJECTED', 'status');
+        }
+        if (month && !isValidYearMonth(month)) {
+            throw new APIError(422, AppErrorCodes.VALIDATION_INVALID_RANGE, 'month must be YYYY-MM format', 'month');
+        }
+
+        const page = parsePositiveInt(req.query.page, 'page', 1);
+        const limit = parseWorkflowListLimit(req.query.limit);
+        const requestedTenantId = getOptionalString(req.query.tenantId);
+        const targetTenantId = resolveTargetTenantId(user, requestedTenantId);
+        const skip = (page - 1) * limit;
+        const { whereSql, values } = buildUnlockRequestWhereClause({
+            tenantId: targetTenantId,
+            status,
+            month,
+            requesterId,
+            approverId,
+            from,
+            to,
+        });
+        const rowsQuery = `
+            SELECT
+                unlock_request_id AS "id",
+                tenant_id AS "tenantId",
+                month,
+                requester_id AS "requesterId",
+                approver_id AS "approverId",
+                rejector_id AS "rejectorId",
+                reason,
+                status,
+                created_at AS "createdAt",
+                approved_at AS "approvedAt",
+                rejected_at AS "rejectedAt"
+            FROM unlock_requests
+            ${whereSql}
+            ORDER BY created_at DESC
+            LIMIT $${values.length + 1}
+            OFFSET $${values.length + 2}
+        `;
+        const countQuery = `
+            SELECT COUNT(*)::int AS total
+            FROM unlock_requests
+            ${whereSql}
+        `;
+
+        const [rows, countRows] = await Promise.all([
+            prisma.$queryRawUnsafe<UnlockRequestRow[]>(rowsQuery, ...values, limit, skip),
+            prisma.$queryRawUnsafe<{ total: number }[]>(countQuery, ...values),
+        ]);
+        const total = countRows[0]?.total ?? 0;
+
+        const unlockRequestIds = rows.map((row) => row.id);
+        const correlationMap = new Map<string, string | null>();
+
+        if (unlockRequestIds.length > 0) {
+            const auditRows = await prisma.auditLog.findMany({
+                where: {
+                    targetType: 'UnlockRequest',
+                    targetId: { in: unlockRequestIds },
+                },
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    targetId: true,
+                    correlationId: true,
+                },
+            });
+
+            for (const auditRow of auditRows) {
+                if (!auditRow.targetId || correlationMap.has(auditRow.targetId)) {
+                    continue;
+                }
+                correlationMap.set(auditRow.targetId, auditRow.correlationId);
+            }
+        }
+
+        const items: UnlockRequestListItem[] = rows.map((row) => ({
+            id: row.id,
+            tenantId: row.tenantId,
+            month: row.month,
+            requesterId: row.requesterId,
+            approverId: row.approverId,
+            rejectorId: row.rejectorId,
+            reason: row.reason,
+            status: row.status,
+            createdAt: row.createdAt,
+            approvedAt: row.approvedAt,
+            rejectedAt: row.rejectedAt,
+            correlationId: correlationMap.get(row.id) ?? null,
         }));
 
         res.json({
