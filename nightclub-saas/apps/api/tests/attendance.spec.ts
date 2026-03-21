@@ -40,7 +40,8 @@ describe('M2: Shift API', () => {
         isWorking: true,
       });
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe('ACCESS_002');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('ACCESS_DENIED');
   });
 
   it('3. POST /attendance/shifts fails without token (401)', async () => {
@@ -57,7 +58,8 @@ describe('M2: Shift API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ isWorking: true });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('VALID_001');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('VALIDATION_INVALID_RANGE');
   });
 
   // =====================
@@ -89,7 +91,8 @@ describe('M2: Shift API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ shiftIds: ['abc'], status: 'approved' });
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe('ACCESS_001');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('ACCESS_DENIED');
   });
 
   it('8. PUT /attendance/shifts/status fails with bad status value', async () => {
@@ -99,7 +102,8 @@ describe('M2: Shift API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ shiftIds: ['abc'], status: 'invalid_status' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('VALID_003');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('VALIDATION_INVALID_RANGE');
   });
 
   it('9. PUT /attendance/shifts/status fails with empty shiftIds', async () => {
@@ -109,6 +113,7 @@ describe('M2: Shift API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ shiftIds: [], status: 'approved' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('VALID_001');
+    expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('VALIDATION_INVALID_RANGE');
   });
 });

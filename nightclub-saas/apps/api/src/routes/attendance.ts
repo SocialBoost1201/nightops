@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '../../prisma/generated/client';
 import { APIError, authenticate, requireRoles, enforceTenantBoundary } from '../middleware';
+import { AppErrorCodes } from '../common/error-codes';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -30,11 +31,11 @@ router.post(
         (user.role === 'Cast' || user.role === 'Staff') &&
         targetAccountId !== user.id
       ) {
-        return next(new APIError(403, 'ACCESS_002', 'Cannot register shift for another account'));
+        return next(new APIError(403, AppErrorCodes.ACCESS_DENIED, 'Cannot register shift for another account'));
       }
 
       if (!targetDate) {
-        return next(new APIError(400, 'VALID_001', 'targetDate is required'));
+        return next(new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'targetDate is required'));
       }
 
       const shift = await prisma.shiftEntry.create({
@@ -119,13 +120,13 @@ router.put(
       const { shiftIds, status, managerNote } = req.body;
 
       if (!shiftIds || !Array.isArray(shiftIds) || shiftIds.length === 0) {
-        return next(new APIError(400, 'VALID_001', 'shiftIds must be a non-empty array'));
+        return next(new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, 'shiftIds must be a non-empty array'));
       }
 
       const allowedStatuses = ['approved', 'rejected'];
       if (!allowedStatuses.includes(status)) {
         return next(
-          new APIError(400, 'VALID_003', `status must be one of: ${allowedStatuses.join(', ')}`)
+          new APIError(400, AppErrorCodes.VALIDATION_INVALID_RANGE, `status must be one of: ${allowedStatuses.join(', ')}`)
         );
       }
 
@@ -140,7 +141,7 @@ router.put(
         .map((s) => s.id);
 
       if (foreignIds.length > 0) {
-        return next(new APIError(403, 'TENANT_001', 'Tenant boundary violation'));
+        return next(new APIError(403, AppErrorCodes.TENANT_MISMATCH, 'Tenant boundary violation'));
       }
 
       const updated = await prisma.shiftEntry.updateMany({
