@@ -1,18 +1,7 @@
 'use client';
 
 import { Filter, RefreshCw, RotateCcw } from 'lucide-react';
-
-export interface AuditLogFilterValues {
-  from: string;
-  to: string;
-  action: string;
-  actorId: string;
-  tenantId: string;
-  requestId: string;
-  correlationId: string;
-  resourceType: string;
-  resourceId: string;
-}
+import { type AuditLogFilterValues } from '@/lib/auditNavigation';
 
 interface AuditLogFilterBarProps {
   values: AuditLogFilterValues;
