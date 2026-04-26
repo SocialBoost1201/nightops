@@ -7,7 +7,7 @@ import { useLogout } from '@/hooks/useLogout';
 import {
   Users, Calendar, Clock, Receipt, Settings,
   LayoutDashboard, ScrollText, FileEdit, BarChart3, Calculator, ShoppingBag,
-  LogOut, KeyRound, ShieldCheck,
+  LogOut, KeyRound, ShieldCheck, SearchCheck,
 } from 'lucide-react';
 
 
@@ -33,7 +33,7 @@ const navItems: NavItem[] = [
   { name: '承認待ち一覧',     path: '/approvals/pending', icon: ShieldCheck, allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: 'アンロック履歴',   path: '/approvals/unlock-requests', icon: ShieldCheck, allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: '給与・月次処理',   path: '/payroll',       icon: Calculator,   allowedRoles: ['Admin'] },
-  { name: '監査ログ',         path: '/audit-logs',    icon: ScrollText,   allowedRoles: ['SystemAdmin', 'Admin'] },
+  { name: '監査ログ調査',     path: '/audit-logs',    icon: SearchCheck,  allowedRoles: ['SystemAdmin', 'Admin'] },
   { name: 'マスタ設定',       path: '/settings',      icon: Settings,     allowedRoles: ['Admin'] },
 ];
 
